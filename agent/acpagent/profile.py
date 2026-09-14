@@ -38,6 +38,8 @@ _SSH_USER2_RE = re.compile(r"\buser[= ](?P<user>[A-Za-z0-9_.@-]+)|\brhost=(?P<ip
 _CLF_RE = re.compile(r'^(?P<ip>\S+) \S+ (?P<auth>\S+) \[(?P<ts>[^\]]+)\] "(?P<method>[A-Z]+) (?P<path>\S+)[^"]*" (?P<status>\d{3}) (?P<size>\d+|-)')
 _XFF_RE = re.compile(r'xff="([^"]*)"|X-Forwarded-For:\s*([^\s"]+(?:,\s*[^\s"]+)*)', re.I)
 _SUSPICIOUS = re.compile(r"\.\./|%2e%2e|union\s+select|'\s*or\s*'|%27|<script|/etc/passwd|cmd=|;\s*(?:id|ls|cat|whoami)\b|\$\(|`|sleep\(|benchmark\(|/wp-admin|/\.git|/\.env|passwd|shadow", re.I)
+# attack payloads outrank generic scanner noise when picking what to show
+_SEVERE = re.compile(r"\.\./|%2e%2e|union\s+select|'\s*or\s*'|<script|/etc/passwd|cmd=|;\s*(?:id|ls|cat|whoami)\b|\$\(|`|sleep\(|/\.env|shadow", re.I)
 _PRIVATE = ("10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.", "172.2", "172.30.", "172.31.", "127.")
 
 
@@ -229,13 +231,21 @@ def access_profile(lines, tz, label, year, max_rows: int = 8):
         if not m:
             continue
         ip = m.group("ip")
-        rec = per_ip.setdefault(ip, {"n": 0, "err": 0, "sus": 0, "first": None, "last": None, "paths": Counter(), "bytes": 0, "users": Counter()})
+        rec = per_ip.setdefault(ip, {"n": 0, "err": 0, "sus": 0, "first": None, "last": None, "paths": Counter(), "bytes": 0,
+                                     "users": Counter(), "first_sus": None, "first_sus_ok": None, "severe": 0})
         rec["n"] += 1
         if m.group("status")[0] in ("4", "5"):
             rec["err"] += 1
         if _SUSPICIOUS.search(m.group("path")) or _SUSPICIOUS.search(ln):
             rec["sus"] += 1
-            suspicious_lines.append(ln)
+            severe = bool(_SEVERE.search(m.group("path")) or _SEVERE.search(ln))
+            if severe:
+                rec["severe"] += 1
+            suspicious_lines.append((0 if severe else 1, ln))
+            if rec["first_sus"] is None:
+                rec["first_sus"] = ln
+            if rec["first_sus_ok"] is None and m.group("status").startswith("2"):
+                rec["first_sus_ok"] = ln
         rec["paths"][f"{m.group('method')} {m.group('path')[:60]}"] += 1
         if m.group("size") != "-":
             rec["bytes"] += int(m.group("size"))
@@ -251,18 +261,26 @@ def access_profile(lines, tz, label, year, max_rows: int = 8):
                 xff_clients[public[-1]] += 1
     if not per_ip:
         return ""
-    rows = sorted(per_ip.items(), key=lambda kv: (-kv[1]["sus"], -kv[1]["n"]))
-    out = ["HTTP access profile per client IP (requests / 4xx-5xx / suspicious payloads / bytes served):"]
+    rows = sorted(per_ip.items(), key=lambda kv: (-kv[1]["severe"], -kv[1]["sus"], -kv[1]["n"]))
+    out = ["HTTP access profile per client IP (requests / 4xx-5xx / suspicious payloads [attack payloads such as ../, "
+           "SQL, command injection count as 'severe'] / bytes served):"]
     for ip, r in rows[:max_rows]:
         top = ", ".join(f"{p}({c})" for p, c in r["paths"].most_common(3))
         users = ", ".join(f"{u}({c})" for u, c in r["users"].most_common(3))
-        out.append(f"- {ip}: {r['n']} req, {r['err']} errors, {r['sus']} suspicious, {r['bytes']} bytes; first `{_ts_of(r['first'])}`{utc_note(r['first'], tz, label, year)}; last `{_ts_of(r['last'])}`"
-                   + (f"; auth users: {users}" if users else "") + f"; top: {top}")
+        line = (f"- {ip}: {r['n']} req, {r['err']} errors, {r['sus']} suspicious ({r['severe']} severe), {r['bytes']} bytes; "
+                f"first request `{_ts_of(r['first'])}`{utc_note(r['first'], tz, label, year)}; last `{_ts_of(r['last'])}`"
+                + (f"; auth users: {users}" if users else "") + f"; top: {top}")
+        if r["first_sus"]:
+            line += f"\n    first suspicious request: {r['first_sus'][:190]}{utc_note(r['first_sus'], tz, label, year)}"
+        if r["first_sus_ok"]:
+            line += f"\n    first suspicious request answered 2xx: {r['first_sus_ok'][:190]}{utc_note(r['first_sus_ok'], tz, label, year)}"
+        out.append(line)
     if xff_clients:
         out.append("X-Forwarded-For public client IPs (last non-private hop): " + ", ".join(f"{k} ({c})" for k, c in xff_clients.most_common(8)))
     if suspicious_lines:
-        out.append("Suspicious request lines:")
-        for ln in suspicious_lines[:8]:
+        suspicious_lines.sort(key=lambda t: t[0])
+        out.append("Suspicious request lines (attack payloads first, in file order):")
+        for _, ln in suspicious_lines[:10]:
             out.append(f"  {ln[:200]}")
     return "\n".join(out)
 

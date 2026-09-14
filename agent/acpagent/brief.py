@@ -574,6 +574,10 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
     uniq = []
     seen = set()
     for v, s in found:
+        body = v[v.find("{") + 1:-1]
+        # a "flag" containing quotes, operators or brackets is a fragment of source code
+        if any(ch in body for ch in "\"'+[]()<>;\\") or body.strip() == "":
+            continue
         if v not in seen:
             seen.add(v)
             uniq.append((v, s))
