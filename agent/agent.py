@@ -523,7 +523,9 @@ def run_loop(st: State):
             ever_called = True
         elif not text_mode and not ever_called:
             no_call_rounds += 1
-            if no_call_rounds >= 2:
+            # One prose-only reply that does not finish the task is enough evidence that
+            # the tool schemas are not reaching the model (or it will not use them).
+            if no_call_rounds >= 1 and not check_done(st, text)[0]:
                 # The server accepted the tool schemas but the model never calls them:
                 # most likely they were silently ignored. Switch to the text protocol.
                 text_mode = True
