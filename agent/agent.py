@@ -24,7 +24,7 @@ from acpagent.llm import (LLM, BudgetExceeded, ContextTooLong, ToolCall, ToolsUn
 # is generous but leaves margin for the finaliser and for slower hidden limits.
 SOFT_DEADLINE_SEC = float(os.environ.get("LOCAL_AGENT_DEADLINE_SEC") or 520)
 HARD_GRACE_SEC = 12
-TOKEN_BUDGET = int(os.environ.get("LOCAL_AGENT_TOKEN_BUDGET") or 220000)
+TOKEN_BUDGET = int(os.environ.get("LOCAL_AGENT_TOKEN_BUDGET") or 140000)
 MAX_ROUNDS = int(os.environ.get("LOCAL_AGENT_MAX_ROUNDS") or 48)
 MAX_CORRECTIONS = 8
 HISTORY_CHAR_CAP = int(os.environ.get("LOCAL_AGENT_HISTORY_CHARS") or 70000)
@@ -420,6 +420,8 @@ def run_loop(st: State):
     context_retries = 0
     final_text = ""
     edit_counts = {}
+    sig_counts = {}      # (call, result) signature -> occurrences anywhere in the run
+    error_streak = 0     # consecutive tool results that were errors
     while rounds < MAX_ROUNDS:
         if llm.exhausted():
             log("budget exhausted; leaving the loop")
@@ -541,11 +543,15 @@ def run_loop(st: State):
             else:
                 repeat = 0
             last_sig = sig
-        if repeat >= 2:
-            log("same call and result repeated; nudging")
+            sig_counts[sig] = sig_counts.get(sig, 0) + 1
+            failed = result.startswith("[error]") or result.startswith("[exit ") and not result.startswith("[exit 0]")
+            error_streak = error_streak + 1 if failed else 0
+        worst = max(sig_counts.values()) if sig_counts else 0
+        if repeat >= 2 or worst >= 3 or error_streak >= 4:
+            log(f"no progress (repeat={repeat}, same-signature={worst}, error-streak={error_streak}); nudging")
             messages.append({"role": "user", "content": prompts.NUDGE_REPEAT})
             llm.temperature = 0.4
-            if repeat >= 4:
+            if repeat >= 4 or worst >= 5 or error_streak >= 8:
                 log("stuck in a loop; leaving")
                 break
         # Early exit: a valid deliverable was just written (saves a model round).
