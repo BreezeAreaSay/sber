@@ -369,8 +369,6 @@ def find_servers(workdir=None, exclude_pids=()):
         if not argv:
             continue
         joined = " ".join(argv)
-        if not any(tok in joined for tok in _SERVER_TOKENS):
-            continue
         if "tail -f" in joined or "sleep" in argv[0] or "agent.py" in joined:
             continue
         if any(tok in joined.lower() for tok in _LLM_TOKENS):
@@ -381,7 +379,13 @@ def find_servers(workdir=None, exclude_pids=()):
             cwd = os.readlink(f"/proc/{pid}/cwd")
         except OSError:
             cwd = None
-        if wd and not (cwd and (cwd == wd or cwd.startswith(wd + os.sep)) or (wd + os.sep) in joined or f" {wd}" in joined):
+        rooted = bool(wd) and bool(cwd) and (cwd == wd or cwd.startswith(wd + os.sep))
+        mentions = bool(wd) and ((wd + os.sep) in joined or f" {wd}" in joined)
+        # A listening process rooted in the task directory is the app server whatever
+        # it is called; elsewhere only well-known server commands qualify.
+        if wd and not (rooted or mentions):
+            continue
+        if not wd and not any(tok in joined for tok in _SERVER_TOKENS):
             continue
         env = {}
         try:
