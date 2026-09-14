@@ -457,7 +457,113 @@ def file_kind(logical, p: Path) -> str:
         return "access"
     if p.suffix.lower() in (".jsonl", ".ndjson") or (logical and logical[0].lstrip().startswith("{")):
         return "jsonl"
+    if p.suffix.lower() in (".tsv", ".csv", ".psv") or _sniff_delimited(logical) is not None:
+        return "delimited"
     return "other"
+
+
+_ROLE_MAP = (
+    ("ip", ("ip", "src_ip", "source_ip", "client_ip", "client", "src", "source", "remote_addr", "remote", "host", "addr", "address")),
+    ("ts", ("ts", "time", "timestamp", "date", "datetime", "when", "@timestamp")),
+    ("method", ("method", "verb", "action", "op")),
+    ("path", ("path", "resource", "url", "uri", "request", "target", "endpoint", "file", "object")),
+    ("status", ("status", "code", "status_code", "result", "response")),
+    ("size", ("size", "bytes", "length", "bytes_sent", "volume")),
+    ("user", ("user", "username", "account", "actor", "subject", "login")),
+)
+
+
+def _sniff_delimited(lines):
+    """(delimiter, header fields, first data index) for a delimited log, or None."""
+    header, hidx = None, 0
+    for i, ln in enumerate(lines[:12]):
+        if ln.lstrip().startswith("#") and re.search(r"fields?\s*[:=]", ln, re.I):
+            header = re.split(r"fields?\s*[:=]", ln, maxsplit=1, flags=re.I)[1]
+            hidx = i + 1
+            break
+    data_start = next((i for i, ln in enumerate(lines) if ln.strip() and not ln.lstrip().startswith("#")), None)
+    if data_start is None:
+        return None
+    sample = lines[data_start]
+    delim = None
+    for cand in ("\t", "|", ",", ";"):
+        if sample.count(cand) >= 2:
+            delim = cand
+            break
+    if delim is None:
+        return None
+    if header is not None:
+        fields = [f.strip().lower() for f in header.strip().split(delim if delim in header else None)]
+    else:
+        first = [f.strip().lower() for f in sample.split(delim)]
+        named = sum(1 for f in first if re.fullmatch(r"[a-z_][a-z0-9_]*", f or ""))
+        if named < max(2, len(first) - 1):
+            return None
+        fields, data_start = first, data_start + 1
+    if len(fields) < 2:
+        return None
+    return delim, fields, max(data_start, hidx)
+
+
+def delimited_facts(lines, tz, label, year):
+    """Per-client facts of a tab/comma/pipe separated access log.
+
+    Column names are mapped to roles, so a custom format this code has never seen is
+    aggregated exactly like a CLF log and every caller works unchanged."""
+    sniff = _sniff_delimited(lines)
+    if sniff is None:
+        return None
+    delim, fields, start = sniff
+    role_of = {}
+    for idx, name in enumerate(fields):
+        for role, names in _ROLE_MAP:
+            if name in names and role not in role_of:
+                role_of[role] = idx
+                break
+    if "ip" not in role_of:
+        return None
+    per_ip = {}
+    for ln in lines[start:]:
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        cols = [c.strip() for c in ln.split(delim)]
+        if len(cols) <= role_of["ip"]:
+            continue
+        ip = cols[role_of["ip"]]
+        if not _IPV4.fullmatch(ip):
+            continue
+        def col(role, default=""):
+            i = role_of.get(role)
+            return cols[i] if i is not None and i < len(cols) else default
+        path, status, size = col("path"), col("status"), col("size", "-")
+        rec = per_ip.setdefault(ip, {"n": 0, "err": 0, "sus": 0, "first": None, "last": None, "paths": Counter(),
+                                     "bytes": 0, "users": Counter(), "first_sus": None, "first_sus_ok": None,
+                                     "severe": 0, "lines": [], "parsed": []})
+        rec["n"] += 1
+        rec["lines"].append(ln)
+        rec["parsed"].append({"method": col("method", "GET"), "path": path, "status": status,
+                              "size": size or "-", "line": ln})
+        if status[:1] in ("4", "5"):
+            rec["err"] += 1
+        if _SUSPICIOUS.search(path) or _SUSPICIOUS.search(ln):
+            rec["sus"] += 1
+            severe = bool(_SEVERE.search(path) or _SEVERE.search(ln))
+            if severe:
+                rec["severe"] += 1
+            if rec["first_sus"] is None:
+                rec["first_sus"] = ln
+            if rec["first_sus_ok"] is None and status.startswith("2"):
+                rec["first_sus_ok"] = ln
+        rec["paths"][f"{col('method', 'GET')} {path[:60]}"] += 1
+        if size.isdigit():
+            rec["bytes"] += int(size)
+        if col("user") not in ("", "-"):
+            rec["users"][col("user")] += 1
+        rec["first"] = rec["first"] or ln
+        rec["last"] = ln
+    if not per_ip:
+        return None
+    return {"per_ip": per_ip, "xff": Counter(), "suspicious": [], "tz": tz, "label": label, "year": year}
 
 
 def jsonl_facts(rows, tz, label, year):
@@ -513,6 +619,11 @@ def file_facts(p: Path):
         if not rows:
             return None
         facts = jsonl_facts(rows, tz, label, year)
+    elif kind == "delimited":
+        facts = delimited_facts(logical, tz, label, year)
+        if facts is None:
+            return None
+        kind = "access"  # same shape from here on
     else:
         return None
     facts.update({"path": p, "kind": kind, "lines": logical})

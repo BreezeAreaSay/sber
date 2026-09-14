@@ -319,11 +319,21 @@ def solve(root, keys, instruction: str):
         return f"{ln[:160]}{profile.utc_note(ln, facts.get('tz'), facts.get('label'), facts.get('year'))}"
 
     # attack lines of the suspect: the statement's literals first, then the generic payload scan
+    attack_precise = False
     if kind == "access":
         if literals:
             attack = [ln for ln in lines if any(l.lower() in ln.lower() for l in literals)]
+            attack_precise = True
         else:
-            attack = [ln for ln in lines if profile._SEVERE.search(ln)] or [ln for ln in lines if profile._SUSPICIOUS.search(ln)]
+            irx, _iname = _concept_for((instruction or "").lower())
+            if irx is not None:
+                attack = [ln for ln in lines if irx.search(ln)]
+                attack_precise = bool(attack)
+            else:
+                attack = []
+            if not attack:
+                attack = [ln for ln in lines if profile._SEVERE.search(ln)] or [ln for ln in lines if profile._SUSPICIOUS.search(ln)]
+                attack_precise = False
         parsed_by_line = {p["line"]: p for p in rec["parsed"]}
     else:
         attack = [ln for ln in lines if "Failed" in ln or "Invalid user" in ln]
@@ -404,6 +414,8 @@ def solve(root, keys, instruction: str):
                     n = sum(1 for ln in lines if crx.search(ln))
                     if n:
                         value, why, c = str(n), f"{cname} requests from that client (the class the task names)", "high"
+                elif not attack_precise:
+                    value, why, c = str(len(attack)), "requests from that client with an attack payload (code scan)", "low"
                 elif asks_status:
                     # "how many requests were answered with HTTP 403" means exactly 403,
                     # not the whole 4xx/5xx family
@@ -431,7 +443,12 @@ def solve(root, keys, instruction: str):
                     src_line, why, c = rec["last"], "last event of that IP", "high"
                 else:
                     src_line = rec["first_failed"] or rec["first"]
-                    why, c = "first Failed line of that IP", "high" if "first" in ctx else "low"
+                    # the ordinal alone does not say which event stream is meant: only a
+                    # clause that actually names failed authentication earns confidence
+                    names_failed = any(w in ctx for w in ("fail", "invalid", "attempt", "brute", "password",
+                                                          "unsuccessful", "неудач", "попыт"))
+                    why = "first Failed line of that IP"
+                    c = "high" if ("first" in ctx and names_failed) else "low"
             else:
                 if "last" in ctx and "first" not in ctx:
                     src_line, why, c = attack[-1], "last attack request of that client", "high"
@@ -440,7 +457,8 @@ def solve(root, keys, instruction: str):
                     why, c = "first attack request answered 2xx", "high" if first_ok else "low"
                 else:
                     src_line = attack[0]
-                    why, c = "first attack request of that client", "high" if "first" in ctx else "low"
+                    why = "first attack request of that client"
+                    c = "high" if ("first" in ctx and attack_precise) else "low"
             value = ts_value(src_line, wants_utc, keep_fraction, seconds_only) if src_line else None
         elif is_user:
             if kind == "auth":
@@ -452,9 +470,11 @@ def solve(root, keys, instruction: str):
                 value, why, c = rec["users"].most_common(1)[0][0], "authenticated user of that client's requests", "low"
         elif is_path and kind == "access":
             if any(w in clause for w in ("200", "2xx", "succe", "returned", "served", "disclosed", "leak")) and first_ok:
-                src_line, why, c = first_ok, "path of the first attack request answered 2xx", "high"
+                src_line, why = first_ok, "path of the first attack request answered 2xx"
+                c = "high" if attack_precise else "low"
             else:
-                src_line, why, c = attack[0], "path of the first attack request", "high" if "first" in clause else "low"
+                src_line, why = attack[0], "path of the first attack request"
+                c = "high" if ("first" in clause and attack_precise) else "low"
             value = parsed_by_line.get(src_line, {}).get("path")
             if value and any(w in clause for w in ("basename", "file name only", "filename only")):
                 value = value.rsplit("/", 1)[-1]
