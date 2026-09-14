@@ -89,6 +89,46 @@ def load_json_lenient(text: str):
                 return json.loads(variant)
             except ValueError:
                 continue
+    # Several separate JSON objects (one per finding) in prose: collect them.
+    objs = []
+    depth = 0
+    start = None
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                blob = text[start:i + 1]
+                try:
+                    obj = json.loads(_TRAILING_COMMA_RE.sub(r"\1", blob))
+                    if isinstance(obj, dict):
+                        objs.append(obj)
+                except ValueError:
+                    pass
+                start = None
+            if depth < 0:
+                depth = 0
+    findings = [o for o in objs if isinstance(o, dict) and ("title" in o or "severity" in o)]
+    if findings:
+        return {"findings": findings}
+    wrappers = [o for o in objs if isinstance(o, dict) and any(isinstance(v, list) for v in o.values())]
+    if wrappers:
+        return wrappers[0]
     return None
 
 
