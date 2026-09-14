@@ -89,6 +89,7 @@ class State:
         self.deadline_ts = START_TS + SOFT_DEADLINE_SEC
         self.deliverable_mtime = None
         self.tests_passed = False
+        self.test_baseline = None   # (ok, failing test ids) before any change of ours
         self.critical_nudged = False
         self.mechanical_notes = []
         self.seen_flags = []  # flag-shaped strings observed in tool outputs (ctf)
@@ -459,6 +460,32 @@ def _clean_flag(value: str, prefix: str) -> bool:
 
 # ---- deterministic code fix ---------------------------------------------------------------------
 
+_FAILED_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.M)
+
+
+def _failing_tests(output: str):
+    """Identities of the tests that failed, so a pre-existing failure can be told apart
+    from one our change introduced."""
+    return set(_FAILED_RE.findall(output or ""))
+
+
+def _baseline_tests(st: State):
+    """Run the project's tests once before we touch anything.
+
+    A suite that is already failing — a database that is down, a service the runner
+    never started — must not cause a correct fix to be reverted: reverting would lose
+    the task for a reason that has nothing to do with the change."""
+    if st.test_baseline is not None or not st.spec.test_cmd:
+        return st.test_baseline
+    ok, out = oracle.run_tests(st.spec.test_cmd, st.workdir,
+                               min(TEST_TIMEOUT_SEC, max(20, st.deadline_ts - time.monotonic() - 30)))
+    st.test_baseline = (ok, _failing_tests(out))
+    if ok is False:
+        log(f"baseline: the project's tests already fail before any change "
+            f"({len(st.test_baseline[1])} failing); environment problems will not trigger a revert")
+    return st.test_baseline
+
+
 def _verify_stage(st: State, label: str, originals: dict, notes: list, module) -> bool:
     """Keep a mechanical rewrite only if the code compiles, the app restarts and the
     tests pass; otherwise revert it (and put the server back)."""
@@ -480,8 +507,16 @@ def _verify_stage(st: State, label: str, originals: dict, notes: list, module) -
         tok, out = oracle.run_tests(st.spec.test_cmd, st.workdir,
                                     min(TEST_TIMEOUT_SEC, max(20, st.deadline_ts - time.monotonic() - 30)))
         if tok is False:
-            log(f"tests fail after {label}; reverting: {out[-300:]}")
-            ok = False
+            base = st.test_baseline
+            now_failing = _failing_tests(out)
+            if base is not None and base[0] is False and now_failing and now_failing <= base[1]:
+                log(f"tests still fail after {label}, but exactly as they did before it "
+                    f"({len(now_failing)} pre-existing failures); keeping the rewrite")
+            else:
+                new_failures = sorted(now_failing - base[1]) if base and base[1] else []
+                detail = (", ".join(new_failures[:3]) if new_failures else out[-300:])
+                log(f"tests fail after {label}; reverting: {detail}")
+                ok = False
         elif tok is None:
             log(f"tests produced no usable result after {label}; keeping the rewrite (it compiles)")
     if not ok:
@@ -968,6 +1003,10 @@ def run(st: State):
     if sp.kind == "code_fix":
         st.snapshot = oracle.snapshot_tree(st.workdir)
         try:
+            _baseline_tests(st)
+        except Exception as exc:  # noqa: BLE001
+            log(f"baseline test run failed: {exc}")
+        try:
             st.servers = oracle.find_servers(st.workdir)
         except Exception as exc:  # noqa: BLE001
             st.servers = []
@@ -1029,7 +1068,12 @@ def run(st: State):
             log(f"ctf solved deterministically: exactly one clean flag candidate {clean[0]} (0 tokens)")
             return
         if clean:
-            log(f"{len(clean)} clean flag candidates; the model must pick one")
+            # Insurance against being killed before finalize: a short task timeout
+            # (120s for the trivial tier) can end the process at any moment, so the best
+            # candidate goes to disk now and the model only refines it.
+            oracle.write_text(sp.deliverable, clean[0])
+            st.seen_flags.append(clean[0])
+            log(f"{len(clean)} clean flag candidates; wrote {clean[0]} as insurance, the model may refine it")
     base_url, api_key, model = resolve_endpoint()
     if not base_url:
         log("no OPENAI_BASE_URL; skipping the model phase")
