@@ -173,7 +173,8 @@ class LLM:
             raise BudgetExceeded(f"token budget spent ({self.tokens_used}/{self.token_budget})")
         attempts = 0
         backoff = 1.0
-        while attempts < 5:
+        max_attempts = 8
+        while attempts < max_attempts:
             attempts += 1
             timeout = self._timeout()
             if timeout < MIN_USEFUL_CALL_SEC:
@@ -222,8 +223,11 @@ class LLM:
                     raise BudgetExceeded(self.last_error)
                 if exc.code in (401, 403):
                     raise BudgetExceeded(self.last_error)
-                # 429 / 5xx: transient
-                time.sleep(min(backoff, 5.0))
+                # 429 / 5xx: transient (a model still loading, a busy server); wait it out
+                # as long as the deadline allows.
+                if self.remaining() < MIN_USEFUL_CALL_SEC + RESERVE_SEC + backoff:
+                    raise BudgetExceeded("deadline reached while the endpoint was unavailable")
+                time.sleep(min(backoff, 15.0))
                 backoff *= 2
                 continue
             except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
@@ -245,9 +249,9 @@ class LLM:
                         mt = max(1536, mt // 2)
                         continue
                     raise BudgetExceeded("model call timed out")
-                if self.remaining() < MIN_USEFUL_CALL_SEC + RESERVE_SEC:
+                if self.remaining() < MIN_USEFUL_CALL_SEC + RESERVE_SEC + backoff:
                     raise BudgetExceeded("deadline reached during retry")
-                time.sleep(min(backoff, 5.0))
+                time.sleep(min(backoff, 15.0))
                 backoff *= 2
                 continue
             except ValueError as exc:
