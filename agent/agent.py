@@ -30,8 +30,8 @@ MAX_ROUNDS = int(os.environ.get("LOCAL_AGENT_MAX_ROUNDS") or 40)
 # not spend the whole budget polishing it; code fixes and CTFs get more room.
 ROUND_CAPS = {"json_report": 16, "kv_report": 22, "ctf": 26, "code_fix": 32, "generic": 22, "exact": 6}
 MAX_CORRECTIONS = 8
-HISTORY_CHAR_CAP = int(os.environ.get("LOCAL_AGENT_HISTORY_CHARS") or 70000)
-KEEP_RECENT_ROUNDS = 4
+HISTORY_CHAR_CAP = int(os.environ.get("LOCAL_AGENT_HISTORY_CHARS") or 56000)
+KEEP_RECENT_ROUNDS = 3
 TEST_TIMEOUT_SEC = 170
 
 WORKDIR_CANDIDATES = ("/app", "/workspace", "/srv/app", "/data", "/opt/app", "/home/user/app")
