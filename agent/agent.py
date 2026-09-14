@@ -358,9 +358,16 @@ def run_loop(st: State):
             if context_retries > 3:
                 break
             messages = trim_history(messages, cap=HISTORY_CHAR_CAP // 2, keep_recent=2, aggressive=True)
-            if context_retries >= 2 and len(messages) > 1 and len(messages[1].get("content") or "") > 6000:
-                messages[1] = dict(messages[1])
-                messages[1]["content"] = messages[1]["content"][:6000] + "\n... (context shortened)"
+            if context_retries >= 2:
+                if len(messages) > 1 and len(messages[1].get("content") or "") > 6000:
+                    messages[1] = dict(messages[1])
+                    messages[1]["content"] = messages[1]["content"][:6000] + "\n... (context shortened)"
+                # Even the most recent outputs must shrink when the window is this small.
+                for i in range(2, len(messages)):
+                    m = messages[i]
+                    if m.get("role") in ("tool", "user") and len(m.get("content") or "") > 1500:
+                        messages[i] = dict(m)
+                        messages[i]["content"] = m["content"][:1500] + "\n... [truncated to fit the context window]"
             continue
         except BudgetExceeded as exc:
             log(f"stopping: {exc}")
@@ -412,6 +419,9 @@ def run_loop(st: State):
             })
         else:
             messages.append({"role": "assistant", "content": text or json.dumps({"name": calls[0].name, "arguments": calls[0].arguments})})
+        # Many calls in one round must share the output budget, or one round alone can
+        # overflow a small context window.
+        per_call_cap = max(1800, min(tools.MAX_TOOL_OUTPUT_CHARS, 24000 // max(1, len(calls))))
         for c in calls:
             if st.spec.no_modify and c.name in ("write_file", "str_replace"):
                 target = str(c.arguments.get("path", ""))
@@ -421,6 +431,8 @@ def run_loop(st: State):
                     result = tools.dispatch(c.name, c.arguments, st.workdir)
             else:
                 result = tools.dispatch(c.name, c.arguments, st.workdir)
+            if len(calls) > 1 and len(result) > per_call_cap:
+                result = tools.truncate(result, per_call_cap)
             preview = result.replace("\n", " ")[:160]
             log(f"  {c.name}({json.dumps(c.arguments, ensure_ascii=False)[:150]}) -> {preview}")
             if native:
