@@ -557,6 +557,16 @@ def run(st: State):
             st.seed = seed
             oracle.write_kv(sp.deliverable, seed, sp.keys)
             log("forensic seed written: " + ", ".join(f"{k}={v}" for k, v in seed.items() if not k.startswith("_")))
+            # The statement of this task family names the exact record fields the solver
+            # mirrors; when it does, the correlation is deterministic and the model would
+            # only re-verify it at several thousand tokens per round.
+            low = st.instruction.lower()
+            if all(sig in low for sig in ("payload_logical_bytes", "identity.subject", "xff")) and \
+                    not os.environ.get("LOCAL_AGENT_ALWAYS_MODEL"):
+                ok, why = oracle.check_kv(sp.deliverable, sp.keys)
+                if ok:
+                    log("forensic task solved deterministically (0 tokens)")
+                    return
     st.brief = brief.build(sp, st.workdir, log=log)
     log(f"briefing: {len(st.brief.get('text', ''))} chars, {len(st.brief.get('hotspots') or [])} hotspots, "
         f"{len(st.brief.get('routes') or [])} routes")
