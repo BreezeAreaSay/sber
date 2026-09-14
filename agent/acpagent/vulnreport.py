@@ -45,6 +45,18 @@ _SYNONYMS = {
     "Plaintext Password Storage": "plaintext password storage / reversible credential storage (CWE-256, CWE-257, "
                                   "CWE-522)",
     "Open Redirect": "open redirect / unvalidated forward (CWE-601)",
+    "Mass Assignment": "mass assignment / over-posting (CWE-915, CWE-1321) — request fields are bound straight "
+                       "onto a model, so a caller can set attributes the form never exposed",
+    "Insecure Cookie": "insecure cookie attributes (CWE-614, CWE-1004) — the session cookie is set without "
+                       "Secure and HttpOnly",
+    "Sensitive Data in Logs": "sensitive data written to the log (CWE-532) — credentials or tokens are recorded "
+                              "in plaintext where any log reader can retrieve them",
+    "Unrestricted File Upload": "unrestricted file upload (CWE-434) — the stored name comes from the caller, so a "
+                                "file can be written outside the upload directory or served back as code",
+    "Server-Side Template Injection": "server-side template injection (SSTI, CWE-1336, CWE-94) — caller input is "
+                                      "compiled as a template, which usually yields remote code execution",
+    "Information Disclosure": "information disclosure through error details (CWE-209, CWE-497) — internal "
+                              "exception text or a traceback is returned to the caller",
 }
 
 _PAYLOADS = {
@@ -57,6 +69,11 @@ _PAYLOADS = {
     "XML External Entity": "<!DOCTYPE x [<!ENTITY e SYSTEM \"file:///etc/passwd\">]><x>&e;</x>",
     "Open Redirect": "?next=https://attacker.example/ , ?redirect_uri=//attacker.example",
     "Improper Authentication": "a JWT re-signed with alg=none, or any token accepted because the signature is not verified",
+    "Mass Assignment": 'posting {"is_admin": true} or {"role": "admin"} alongside the legitimate fields',
+    "Unrestricted File Upload": "filename=../../var/www/shell.py , filename=avatar.php",
+    "Server-Side Template Injection": "{{ 7*7 }} , {{ config.items() }} , {{ ''.__class__.__mro__[1].__subclasses__() }}",
+    "Sensitive Data in Logs": "log in with any account and read the recorded password from the application log",
+    "Insecure Cookie": "read the session cookie over plain HTTP, or from JavaScript via document.cookie",
 }
 
 # Signal groups mirroring how these reports are graded: a usable finding names the

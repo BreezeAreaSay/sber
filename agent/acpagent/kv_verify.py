@@ -171,6 +171,44 @@ def _literals(instruction):
     return out
 
 
+_WIN_BLOCK = re.compile(r"<Event\b.*?</Event>", re.S | re.I)
+_WIN_ID = re.compile(r"<EventID[^>]*>\s*(\d+)\s*</EventID>", re.I)
+_WIN_IP = re.compile(r'<Data\s+Name\s*=\s*["\'](?:IpAddress|ClientAddress)["\']\s*>([^<]*)</Data>', re.I)
+_WIN_FAIL = {"4625", "4771", "4776", "529", "530", "531", "532", "533", "534", "535", "536", "537", "539"}
+_WIN_OK = {"4624", "4648", "528", "540"}
+
+
+def _win_counts(text, entity):
+    """Counts a Windows security log supports, parsed independently of profile.py."""
+    counts = set()
+    events = []
+    for block in _WIN_BLOCK.findall(text):
+        eid = _WIN_ID.search(block)
+        ip = _WIN_IP.search(block)
+        if not eid or not ip:
+            continue
+        events.append((eid.group(1), ip.group(1).strip()))
+    if not events:
+        return counts
+    own = [e for e in events if e[1] == entity]
+    if not own:
+        return counts
+    counts.add(len(own))
+    by_id = {}
+    for eid, _ip in own:
+        by_id[eid] = by_id.get(eid, 0) + 1
+    counts.update(by_id.values())
+    fails = sum(1 for eid, _ in own if eid in _WIN_FAIL)
+    oks = sum(1 for eid, _ in own if eid in _WIN_OK)
+    counts.add(fails)
+    counts.add(oks)
+    first_ok = next((i for i, (eid, _) in enumerate(own) if eid in _WIN_OK), None)
+    if first_ok is not None:
+        counts.add(sum(1 for eid, _ in own[:first_ok] if eid in _WIN_FAIL))
+        counts.add(sum(1 for eid, _ in own[first_ok:] if eid in _WIN_FAIL))
+    return counts
+
+
 def _supported_counts(root, entity, instruction):
     """Counts the raw lines actually justify for `entity`, computed without profile.py."""
     counts = set()
@@ -178,6 +216,9 @@ def _supported_counts(root, entity, instruction):
         return counts
     lits = _literals(instruction)
     for _, lines in _evidence(root):
+        joined = "\n".join(lines)
+        if "<Event" in joined:
+            counts |= _win_counts(joined, entity)
         own = [ln for ln in lines if entity in ln]
         if not own:
             continue

@@ -148,6 +148,151 @@ def recover_password(root: Path):
     return None, None, None
 
 
+# ---- RSA and other number-theoretic challenges ----------------------------------------
+
+_NUM_ASSIGN = re.compile(
+    r"(?<![A-Za-z0-9_])(?P<name>[npqedc]|n\d?|modulus|exponent|cipher(?:text)?|ct|enc(?:rypted)?|pubexp|priv)\s*"
+    r"[:=]\s*(?P<val>0x[0-9a-fA-F]{4,}|\d{4,})",
+    re.I,
+)
+
+
+def _numbers(root: Path):
+    """name -> [values] for the big integers a challenge leaves lying around."""
+    found = {}
+    for p in _text_files(root):
+        try:
+            txt = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in _NUM_ASSIGN.finditer(txt):
+            name = m.group("name").lower()
+            raw = m.group("val")
+            val = int(raw, 16) if raw.lower().startswith("0x") else int(raw)
+            found.setdefault(name, [])
+            if val not in found[name]:
+                found[name].append(val)
+    return found
+
+
+def _iroot(x: int, k: int) -> int:
+    """Integer k-th root (floor)."""
+    if x < 0:
+        return 0
+    lo, hi = 0, 1 << ((x.bit_length() + k - 1) // k + 1)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if mid ** k <= x:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+def _fermat(n: int, rounds: int = 200000):
+    """Factor n when its primes are close together, the usual generated-key mistake."""
+    a = _iroot(n, 2)
+    if a * a < n:
+        a += 1
+    for _ in range(rounds):
+        b2 = a * a - n
+        if b2 >= 0:
+            b = _iroot(b2, 2)
+            if b * b == b2:
+                p, q = a - b, a + b
+                if p > 1 and p * q == n:
+                    return p, q
+        a += 1
+    return None
+
+
+def _small_factor(n: int, limit: int = 1_000_000):
+    if n % 2 == 0:
+        return 2, n // 2
+    f = 3
+    while f < limit and f * f <= n:
+        if n % f == 0:
+            return f, n // f
+        f += 2
+    return None
+
+
+def _pollard_rho(n: int, rounds: int = 200000):
+    import math
+    if n % 2 == 0:
+        return 2, n // 2
+    for c in (1, 2, 3):
+        x = y = 2
+        d = 1
+        for _ in range(rounds):
+            x = (x * x + c) % n
+            y = (y * y + c) % n
+            y = (y * y + c) % n
+            d = math.gcd(abs(x - y), n)
+            if d != 1:
+                break
+        if 1 < d < n:
+            return d, n // d
+    return None
+
+
+def _to_bytes(m: int) -> bytes:
+    if m <= 0:
+        return b""
+    return m.to_bytes((m.bit_length() + 7) // 8, "big")
+
+
+def rsa_recover(root: Path, prefix: str = ""):
+    """Decrypt an RSA challenge whose parameters sit in the files.
+
+    Covers the cases a challenge actually uses: the primes are given, the modulus is
+    small or its primes are close together, or the exponent is so small that the
+    ciphertext is a plain power and an integer root undoes it."""
+    nums = _numbers(root)
+    out = []
+    mods = nums.get("n", []) + nums.get("modulus", [])
+    exps = nums.get("e", []) + nums.get("exponent", []) + nums.get("pubexp", []) or [65537, 3]
+    cts = (nums.get("c", []) + nums.get("ct", []) + nums.get("cipher", []) +
+           nums.get("ciphertext", []) + nums.get("enc", []) + nums.get("encrypted", []))
+    ps, qs = nums.get("p", []), nums.get("q", [])
+    for c in cts[:6]:
+        # 1) a small exponent with no padding is just a power
+        for e in exps[:4]:
+            if 2 <= e <= 11:
+                m = _iroot(c, e)
+                if m ** e == c:
+                    out.append((_to_bytes(m), f"plain {e}-th root of the ciphertext (unpadded small exponent)"))
+        for n in mods[:4]:
+            if c >= n:
+                continue
+            factors = None
+            for pp in ps:
+                for qq in qs:
+                    if pp * qq == n:
+                        factors = (pp, qq)
+            if factors is None:
+                for attempt in (_small_factor, _fermat, _pollard_rho):
+                    try:
+                        got = attempt(n)
+                    except Exception:  # noqa: BLE001
+                        got = None
+                    if got:
+                        factors = got
+                        break
+            if not factors:
+                continue
+            pp, qq = factors
+            phi = (pp - 1) * (qq - 1)
+            for e in exps[:4]:
+                try:
+                    d = pow(e, -1, phi)
+                except Exception:  # noqa: BLE001
+                    continue
+                m = pow(c, d, n)
+                out.append((_to_bytes(m), f"RSA decrypted after factoring the {n.bit_length()}-bit modulus"))
+    return out
+
+
 def _gated_programs(root: Path):
     progs = []
     for p in brief.iter_files(Path(root), limit=300):
@@ -192,6 +337,13 @@ def _run(kind, path, arg, timeout=6):
 def solve(root: Path, prefix: str = ""):
     """Return (flag, explanation) or (None, '')."""
     root = Path(root)
+    try:
+        for plain, how in rsa_recover(root, prefix):
+            flag = _extract(plain, prefix)
+            if flag:
+                return flag, how
+    except Exception:  # noqa: BLE001
+        pass
     progs = _gated_programs(root)
     if not progs:
         return None, ""

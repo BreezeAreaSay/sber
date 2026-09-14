@@ -109,6 +109,9 @@ PATTERNS = [
     ("JWT/signature verification weakened", "Improper Authentication", "CWE-287",
      r"""(?i)jwt\.decode\([^\n]*(?:verify\s*=\s*False|options\s*=\s*\{[^}]*verify_signature[^}]*False|algorithms\s*=\s*\[[^\]]*none)|algorithm\s*=\s*["']none["']|verify_signature["']?\s*:\s*False""",
      "critical", None),
+    ("Template rendered from user input (SSTI)", "Server-Side Template Injection", "CWE-1336",
+     r"""(?i)render_template_string\s*\([^\n]*(?:request\.|req\.|\bf["']|\+\s*\w)|Template\s*\([^\n]*(?:request\.|req\.)""",
+     "high", None),
     ("HTML rendered without escaping (XSS)", "Cross-Site Scripting", "CWE-79",
      r"""(?i)render_template_string\s*\(|\bMarkup\s*\(|\|\s*safe\b|autoescape\s*=\s*False|innerHTML\s*=|dangerouslySetInnerHTML|document\.write\s*\(|\{\{\{|<%-|echo\s+\$_(?:GET|POST|REQUEST)""",
      "medium", None),
@@ -127,10 +130,30 @@ PATTERNS = [
     ("Open redirect", "Open Redirect", "CWE-601",
      r"""(?i)(?:redirect|RedirectResponse|res\.redirect|header\(\s*["']Location)\s*\([^\n]*(?:request\.|req\.|params|args|query|next\b|url\b|return_to|redirect_uri)""",
      "medium", None),
+("Request body assigned straight onto a model (mass assignment)", "Mass Assignment", "CWE-915",
+     r"""(?i)(?:\w+\s*\(\s*\*\*\s*(?:request\.(?:json|form|data|get_json\(\))|req\.body|payload|data|body)\b|"""
+     r"""\.update\s*\(\s*(?:request\.(?:json|form)|req\.body|payload)\b|setattr\s*\([^,\n]+,\s*\w+\s*,\s*(?:request|req)\.)""",
+     "medium", None),
+    ("Cookie set without Secure/HttpOnly", "Insecure Cookie", "CWE-614",
+     r"""(?i)set_cookie\s*\((?![^\n]*(?:httponly\s*=\s*True|secure\s*=\s*True))[^\n]*\)""",
+     "low", None),
+    ("Secret or credential written to the log", "Sensitive Data in Logs", "CWE-532",
+     r"""(?i)(?:log(?:ger|ging)?\.\w+|print)\s*\([^\n]*(?:password|passwd|secret|token|api[_-]?key|authorization|credit|ssn)\b""",
+     "medium", None),
+    ("Uploaded file saved under a caller-supplied name", "Unrestricted File Upload", "CWE-434",
+     r"""(?i)\.save\s*\([^\n]*(?:filename|request\.|req\.|\bname\b)|save_uploaded|shutil\.copyfileobj\s*\([^\n]*request""",
+     "high", None),
+    ("Internal error detail returned to the caller", "Information Disclosure", "CWE-209",
+     r"""(?i)(?:return|jsonify|Response)\s*\([^\n]*(?:traceback\.format_exc|str\s*\(\s*e\s*\)|repr\s*\(\s*e\s*\)|\bexc\b)""",
+     "low", None),
 ]
 _COMPILED = [(lab, cat, cwe, re.compile(rx), sev) for lab, cat, cwe, rx, sev, _ in PATTERNS]
+# Findings worth reporting that must not drive a mechanical rewrite: "fixing" them
+# blindly changes stored data, hashing schemes or response shapes the tests rely on.
 AUDIT_ONLY_CATEGORIES = {"Plaintext Password Storage", "Hard-coded Credentials", "Weak Cryptography",
-                         "Insecure Permissions"}
+                         "Insecure Permissions", "Mass Assignment", "Insecure Cookie",
+                         "Sensitive Data in Logs", "Unrestricted File Upload",
+                         "Server-Side Template Injection", "Information Disclosure"}
 # Interpolations that are not user data: placeholder counters, joined column lists, table names.
 _BENIGN_SQL_RE = re.compile(r"""\{\s*len\(|\{\s*['"][^'"]*['"]\.join\(|\{\s*\w+\.join\(|\{\s*placeholders?\s*\}|\{\s*(?:table|tbl|columns?|cols|fields)\s*\}|^\s*@\w+\.(?:get|post|put|delete|patch|route)\(""")
 

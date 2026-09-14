@@ -457,6 +457,8 @@ def file_kind(logical, p: Path) -> str:
         return "access"
     if p.suffix.lower() in (".jsonl", ".ndjson") or (logical and logical[0].lstrip().startswith("{")):
         return "jsonl"
+    if is_windows_log("\n".join(logical[:200])):
+        return "winevent"
     if p.suffix.lower() in (".tsv", ".csv", ".psv") or _sniff_delimited(logical) is not None:
         return "delimited"
     return "other"
@@ -596,6 +598,63 @@ def jsonl_facts(rows, tz, label, year):
             "rows": flat_rows, "tz": tz, "label": label, "year": year, "per_ip": {}}
 
 
+# ---- Windows security event logs ------------------------------------------------------
+
+_WIN_EVENT_RE = re.compile(r"<Event\b.*?</Event>", re.S | re.I)
+_WIN_EVENTID_RE = re.compile(r"<EventID[^>]*>\s*(\d+)\s*</EventID>", re.I)
+_WIN_TIME_RE = re.compile(r"<TimeCreated[^>]*SystemTime\s*=\s*[\"']([^\"']+)", re.I)
+_WIN_DATA_RE = re.compile(r"<Data\s+Name\s*=\s*[\"'](\w+)[\"']\s*>([^<]*)</Data>", re.I)
+_WIN_COMPUTER_RE = re.compile(r"<Computer[^>]*>([^<]+)</Computer>", re.I)
+# Windows says the same things in words when the log is a text export
+_WIN_TEXT_FAIL = re.compile(r"An account failed to log on|Logon Failure|failed to log on", re.I)
+_WIN_TEXT_OK = re.compile(r"An account was successfully logged on|Logon Type", re.I)
+
+# The event ids that matter for an intrusion question.
+_WIN_FAIL_IDS = {"4625", "4771", "4776", "529", "530", "531", "532", "533", "534", "535", "536", "537", "539"}
+_WIN_OK_IDS = {"4624", "4648", "528", "540"}
+_WIN_LOCKOUT_IDS = {"4740", "644"}
+
+
+def windows_lines(text: str):
+    """Canonical one-line-per-event rendering of a Windows security log.
+
+    Windows records the same facts as sshd does, only in XML. Rendering each event as a
+    familiar auth line lets the existing profile, seed and verification code read it
+    without knowing anything about Windows."""
+    out = []
+    for block in _WIN_EVENT_RE.findall(text):
+        eid = _WIN_EVENTID_RE.search(block)
+        if not eid:
+            continue
+        eid = eid.group(1)
+        ts = _WIN_TIME_RE.search(block)
+        ts = ts.group(1) if ts else ""
+        data = {k.lower(): v.strip() for k, v in _WIN_DATA_RE.findall(block)}
+        host = _WIN_COMPUTER_RE.search(block)
+        host = (host.group(1).split(".")[0] if host else "windows")
+        user = data.get("targetusername") or data.get("subjectusername") or data.get("accountname") or "-"
+        ip = data.get("ipaddress") or data.get("clientaddress") or data.get("workstationname") or "-"
+        if ip in ("-", "::1", "127.0.0.1", ""):
+            ip = data.get("workstationname") or ip
+        if not _IPV4.fullmatch(ip or ""):
+            continue  # an event with no source address answers no "which IP" question
+        if eid in _WIN_FAIL_IDS:
+            kind = "Failed password"
+        elif eid in _WIN_OK_IDS:
+            kind = "Accepted password"
+        elif eid in _WIN_LOCKOUT_IDS:
+            kind = "Invalid user"
+        else:
+            continue
+        out.append(f"{ts} {host} security[{eid}]: {kind} for {user} from {ip} port 0 (EventID {eid})")
+    return out
+
+
+def is_windows_log(text: str) -> bool:
+    head = text[:8000]
+    return bool(_WIN_EVENT_RE.search(head) and _WIN_EVENTID_RE.search(head))
+
+
 def file_facts(p: Path):
     """Structured facts of one evidence file (None when it is not a recognised log)."""
     loaded = load_logical(p)
@@ -619,6 +678,13 @@ def file_facts(p: Path):
         if not rows:
             return None
         facts = jsonl_facts(rows, tz, label, year)
+    elif kind == "winevent":
+        canon = windows_lines("\n".join(logical))
+        if not canon:
+            return None
+        facts = auth_facts(canon, tz, label, year)
+        logical = canon
+        kind = "auth"  # same shape from here on
     elif kind == "delimited":
         facts = delimited_facts(logical, tz, label, year)
         if facts is None:
@@ -658,6 +724,12 @@ def profile_file(p: Path, max_chars: int = 2600) -> str:
             note += f"; syslog lines have no year — year {year} from the header"
         parts.append(note + ". All '→ UTC' values below were computed from that.")
     kind = file_kind(logical, p)
+    if kind == "winevent":
+        canon = windows_lines("\n".join(logical))
+        if canon:
+            parts.append("Windows security events rendered as auth lines (EventID 4625 = failed logon, "
+                         "4624 = successful logon, 4740 = lockout):")
+            logical, kind = canon, "auth"
     if kind == "auth":
         t = auth_profile(logical, tz, label, year)
         if t:

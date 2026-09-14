@@ -194,6 +194,101 @@ def rewrite_xss(src: str):
     return new, notes
 
 
+# ---- missing authorization (IDOR) ---------------------------------------------------
+
+_OWNS_HELPER = "_caller_owns"
+_OWNS_HELPER_SRC = "\n".join(['def _caller_owns(obj, caller):', '    """True when `obj` belongs to `caller`, or when it carries no owner at all.', '', '    Objects and callers appear as dicts or as models depending on the project, and', '    an object with no ownership field has nothing to enforce, so it stays allowed.', '    """', '    for _f in ("owner_id", "owner", "user_id", "user", "created_by", "author_id", "author", "account_id"):', '        _val = obj.get(_f) if isinstance(obj, dict) else getattr(obj, _f, None)', '        if _val is None:', '            continue', '        _ids = [caller]', '        for _a in ("id", "username", "name", "email", "sub"):', '            _ids.append(getattr(caller, _a, None))', '            if isinstance(caller, dict):', '                _ids.append(caller.get(_a))', '        return any(_c is not None and _val == _c for _c in _ids)', '    return True', ''])
+_ROUTE_DECO = re.compile(r"^\s*@[\w.]+\.(?:get|post|put|patch|delete|route)\s*\(\s*[\"']([^\"']+)", re.M)
+_ID_IN_PATH = re.compile(r"[<{]\s*(?:int:|str:|uuid:)?\s*(\w*id\w*)\s*[:}>]", re.I)
+_CALLER_ASSIGN = re.compile(r"^(?P<indent>[ \t]+)(?P<var>[A-Za-z_]\w*)\s*=\s*(?P<call>[A-Za-z_][\w.]*)\s*\(\s*\)\s*$", re.M)
+_CALLER_NAMES = ("current_user", "get_current_user", "require_user", "authenticated_user", "current_identity",
+                 "get_user", "auth_user", "require_auth", "login_required_user")
+_DEPENDS_PARAM = re.compile(r"(?P<param>[A-Za-z_]\w*\s*(?::\s*[^=,)]+)?\s*=\s*Depends\(\s*[\w.]*(?:current_user|get_current_user|require_user|auth_user)[\w.]*\s*\))")
+_RETURNS = re.compile(r"^(?P<indent>[ \t]+)return\b(?P<rest>.*)$", re.M)
+
+
+def _handlers(src: str):
+    """[(start_line, end_line, route_path)] for each request handler in the file."""
+    lines = src.splitlines()
+    spans = []
+    for i, line in enumerate(lines):
+        m = re.match(r"\s*@[\w.]+\.(?:get|post|put|patch|delete|route)\s*\(\s*[\"']([^\"']+)", line)
+        if not m:
+            continue
+        path = m.group(1)
+        j = i + 1
+        while j < len(lines) and not re.match(r"\s*(?:async\s+)?def\s", lines[j]):
+            j += 1
+        if j >= len(lines):
+            continue
+        k = j + 1
+        while k < len(lines) and (not lines[k].strip() or lines[k].startswith((" ", "\t"))):
+            k += 1
+        spans.append((j, k, path))
+    return spans
+
+
+def rewrite_authorization(src: str):
+    """Make an object lookup check that the caller owns what it returns.
+
+    Only applied when the project already authenticates callers: without an identity
+    there is nothing to compare against, and inventing one would break every functional
+    test. The ownership test itself is deliberately permissive — an object with no owner
+    field is left accessible — so the rewrite removes access only where it was wrong."""
+    if _OWNS_HELPER in src:
+        return None, []
+    lines = src.splitlines(keepends=True)
+    out = list(lines)
+    notes = []
+    inserts = []  # (line_index, text)
+    for start, end, path in _handlers(src):
+        if not _ID_IN_PATH.search(path):
+            continue
+        body = "".join(lines[start:end])
+        # the caller's identity, as this project already establishes it
+        caller = None
+        for m in _CALLER_ASSIGN.finditer(body):
+            if any(n in m.group("call") for n in _CALLER_NAMES):
+                caller = m.group("var")
+                break
+        if caller is None:
+            dm = _DEPENDS_PARAM.search(lines[start])
+            if dm:
+                caller = dm.group("param").split(":")[0].split("=")[0].strip()
+        if caller is None:
+            continue
+        if _OWNS_HELPER in body or re.search(r"\b(?:403|Forbidden|not authori|permission)", body, re.I):
+            continue
+        # the object this handler hands back
+        target, ret_idx, indent = None, None, ""
+        for off in range(end - 1, start, -1):
+            rm = _RETURNS.match(lines[off].rstrip("\n"))
+            if not rm:
+                continue
+            names = [n for n in re.findall(r"[A-Za-z_]\w*", rm.group("rest"))
+                     if n not in ("jsonify", "return", "dict", "list", "str", "int", "json", "Response", "make_response")]
+            cand = next((n for n in names if re.search(r"^\s*%s\s*=(?!=)" % re.escape(n), body, re.M)), None)
+            if cand and cand != caller:
+                target, ret_idx, indent = cand, off, rm.group("indent")
+                break
+        if target is None:
+            continue
+        reject = _error_stmt(src, indent).replace("path outside the allowed directory", "not your object")
+        reject = reject.replace("status_code=404", "status_code=403").replace("abort(404)", "abort(403)")
+        inserts.append((ret_idx, f"{indent}if not {_OWNS_HELPER}({target}, {caller}):\n{reject}\n"))
+        notes.append(f"missing authorization: {path} now verifies that the caller owns {target}")
+    if not inserts:
+        return None, []
+    for idx, text in sorted(inserts, reverse=True):
+        out.insert(idx, text)
+    body = "".join(out)
+    anchor = 0
+    for mm in re.finditer(r"^(?:import |from )[^\n]*\n", body, re.M):
+        anchor = mm.end()
+    body = body[:anchor] + "\n\n" + _OWNS_HELPER_SRC + "\n" + body[anchor:]
+    return _ensure_import(body), notes
+
+
 def apply(workdir, variant: str = "containment"):
     """Returns (originals, notes) — same contract as sqlfix/safefix."""
     workdir = Path(workdir)
@@ -214,6 +309,9 @@ def apply(workdir, variant: str = "containment"):
         if r is not None:
             new, file_notes = r, file_notes + n
         r, n = rewrite_xss(new)
+        if r is not None:
+            new, file_notes = r, file_notes + n
+        r, n = rewrite_authorization(new)
         if r is not None:
             new, file_notes = r, file_notes + n
         if new != text:
