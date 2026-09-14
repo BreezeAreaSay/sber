@@ -183,6 +183,10 @@ def _user_tainted(lines, idx: int, line: str) -> bool:
 # a line that confines a path (or the fix we just applied) is not a vulnerability
 _PATH_GUARD_RE = re.compile(r"realpath|abspath|commonpath|commonprefix|is_relative_to|\.resolve\(\)|secure_filename|"
                             r"os\.path\.basename|safe_join", re.I)
+# an outbound fetch is confined by a check on the URL that precedes it
+_URL_GUARD_RE = re.compile(
+    r"""_is_safe_external_url|urlparse|allowed_host|ALLOWED_|is_private|ip_address|startswith\(\s*\(?\s*["']https?""",
+    re.I)
 
 
 def scan_hotspots(root: Path, max_hits: int = 45):
@@ -210,6 +214,10 @@ def scan_hotspots(root: Path, max_hits: int = 45):
                 if cat == "Path Traversal" and _PATH_GUARD_RE.search(line):
                     continue  # this line IS the containment check
                 if rx.search(line):
+                    if cat == "Server-Side Request Forgery":
+                        _src_lines = text.splitlines()
+                        if _URL_GUARD_RE.search("\n".join(_src_lines[max(0, i - 6):i])):
+                            break  # the URL is validated before the request is made
                     if cat == "Path Traversal":
                         _src_lines = text.splitlines()
                         if not _user_tainted(_src_lines, i - 1, line):
@@ -527,6 +535,34 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
                     consider(rotated, f"{rel} (caesar +{shift})")
     except Exception:  # noqa: BLE001
         pass
+    # the flag format is known plaintext, so an unknown repeating XOR key is recoverable
+    # without any hint from the source
+    try:
+        markers = [pfx] if pfx else list(COMMON_TAGS)
+        for p in iter_files(Path(root), limit=max_files):
+            try:
+                size = p.stat().st_size
+            except OSError:
+                continue
+            if not (4 <= size <= 262144):
+                continue
+            if p.suffix.lower() in (".py", ".md", ".json", ".yaml", ".yml", ".html", ".js", ".ts", ".c", ".h", ".go"):
+                continue
+            try:
+                data = p.read_bytes()
+            except OSError:
+                continue
+            if any(m in data for m in markers):
+                continue  # already plain, the literal scan has it
+            rel = os.path.relpath(p, root)
+            for plain, how in xor_known_plaintext(data, markers):
+                consider(plain, f"{rel} ({how})")
+            if size <= 65536:
+                for plain, how in xor_break_repeating(data):
+                    if _text_score(plain) >= 1.6 and any(_clean_flag_in(plain, mk) for mk in markers):
+                        consider(plain, f"{rel} ({how})")
+    except Exception:  # noqa: BLE001
+        pass
     # keys/passwords hidden in source: string constants (and joined list literals)
     try:
         cands = _string_constants(Path(root))
@@ -648,6 +684,130 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
 
 _STR_LIT_RE = re.compile(r"""(?<![\w])(?:[rRbBuU]?)(['"])((?:\\.|(?!\1).){3,64})\1""")
 _LIST_LIT_RE = re.compile(r'''\[((?:\s*['"][^'"]{1,32}['"]\s*,?){2,12})\]''')
+
+
+_FLAG_BODY_OK = re.compile(rb"^[A-Za-z0-9_.:+@!?-]{3,120}$")
+
+
+def _clean_flag_in(plain: bytes, marker: bytes) -> bool:
+    """A recovered key is believable only if it yields a properly formed flag: a wrong
+    key still reproduces the marker by construction, so the body is what decides."""
+    for m in FLAG_RE.finditer(plain):
+        val = m.group(0)
+        if marker and not val.startswith(marker):
+            continue
+        if _FLAG_BODY_OK.match(val[val.find(b"{") + 1:-1]):
+            return True
+    return False
+
+
+def xor_known_plaintext(data: bytes, prefixes, max_offsets: int = 8192):
+    """Recover a repeating XOR key whose period the flag format alone determines.
+
+    Wherever the flag sits, the key bytes beneath it are ciphertext XOR marker. When the
+    key is no longer than the marker every slot is pinned exactly, so this is a solve
+    rather than a guess. Longer keys are deliberately left to frequency analysis instead
+    of being half-guessed here: a nearly-right key yields a nearly-right flag, which is
+    worse than no answer at all.
+    Returns a list of (plaintext, description)."""
+    out = []
+    n = len(data)
+    if n < 8:
+        return out
+    for marker in prefixes:
+        m = len(marker)
+        if m < 3:
+            continue
+        limit = n - m + 1
+        offsets = range(limit) if n <= 16384 else range(min(limit, max_offsets))
+        for klen in range(1, m + 1):
+            seen = set()
+            for i in offsets:
+                key = bytearray(klen)
+                consistent = True
+                filled = [False] * klen
+                for j in range(m):
+                    slot = (i + j) % klen
+                    kb = data[i + j] ^ marker[j]
+                    if filled[slot] and key[slot] != kb:
+                        consistent = False
+                        break
+                    key[slot], filled[slot] = kb, True
+                if not consistent or not all(filled):
+                    continue
+                kt = bytes(key)
+                if kt in seen:
+                    continue
+                seen.add(kt)
+                plain = bytes(data[x] ^ kt[x % klen] for x in range(n))
+                if _text_score(plain) < 1.0 or not _clean_flag_in(plain, marker):
+                    continue
+                try:
+                    shown = kt.decode("ascii")
+                except UnicodeDecodeError:
+                    shown = kt.hex()
+                out.append((plain, f"xor key {shown!r} recovered from the known flag prefix"))
+                if len(out) >= 4:
+                    return out
+    return out
+
+
+_ENGLISH_FREQ = b" etaoinshrdlucmfwypvbgkjqxzETAOINSHRDLUCMFWYPVBGKJQXZ"
+
+
+def _text_score(buf: bytes) -> float:
+    """How much this looks like ordinary text (higher is better)."""
+    if not buf:
+        return -1e9
+    score = 0.0
+    for b in buf:
+        if b in _ENGLISH_FREQ:
+            score += 2.0
+        elif 32 <= b <= 126 or b in (9, 10, 13):
+            score += 0.6
+        else:
+            score -= 6.0
+    return score / len(buf)
+
+
+def _hamming(a: bytes, b: bytes) -> int:
+    return sum(bin(x ^ y).count("1") for x, y in zip(a, b))
+
+
+def xor_break_repeating(data: bytes, max_keylen: int = 40, top_lengths: int = 4):
+    """Classic repeating-key XOR break: key length by Hamming distance, then each key
+    byte by how much like text the column decrypts. Recovers keys far longer than the
+    known plaintext can pin, as long as the plaintext is ordinary text."""
+    out = []
+    n = len(data)
+    if n < 32:
+        return out
+    scores = []
+    for klen in range(1, min(max_keylen, n // 4) + 1):
+        blocks = [data[i * klen:(i + 1) * klen] for i in range(min(8, n // klen))]
+        pairs = [(blocks[i], blocks[i + 1]) for i in range(len(blocks) - 1)]
+        if not pairs:
+            continue
+        dist = sum(_hamming(a, b) for a, b in pairs) / (len(pairs) * klen)
+        scores.append((dist, klen))
+    scores.sort()
+    for _dist, klen in scores[:top_lengths]:
+        key = bytearray()
+        for col in range(klen):
+            column = data[col::klen]
+            best, best_score = 0, -1e9
+            for k in range(256):
+                sc = _text_score(bytes(b ^ k for b in column))
+                if sc > best_score:
+                    best, best_score = k, sc
+            key.append(best)
+        plain = bytes(b ^ key[i % klen] for i, b in enumerate(data))
+        try:
+            shown = bytes(key).decode("ascii")
+        except UnicodeDecodeError:
+            shown = bytes(key).hex()
+        out.append((plain, f"xor key {shown!r} recovered by frequency analysis"))
+    return out
 
 
 def _is_sqlite(p: Path) -> bool:

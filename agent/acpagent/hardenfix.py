@@ -111,6 +111,89 @@ def rewrite_auth(src: str):
     return new, notes
 
 
+# Outbound fetch whose URL comes from the caller (SSRF)
+_FETCH_CALL = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<pre>(?:[A-Za-z_]\w*\s*=\s*)?)(?:requests\.(?:get|post|put|delete|head|request)|"
+    r"urllib\.request\.urlopen|urlopen|httpx\.(?:get|post|request))\s*\(\s*(?P<url>[A-Za-z_]\w*)\b[^\n]*\)\s*$"
+)
+_SSRF_GUARDED = re.compile(r"urlparse|allowed_host|ALLOWED|is_private|ip_address|_is_safe_external_url", re.I)
+_SSRF_HELPER = "_is_safe_external_url"
+_SSRF_HELPER_SRC = "\n".join(['import re as _re_ssrf', '', '', 'def _is_safe_external_url(value):', '    """Only plain http(s) to a public host: blocks file://, gopher://, cloud', '    metadata and loopback/private addresses, the usual SSRF targets."""', '    if not isinstance(value, str) or not _re_ssrf.match(r"https?://", value):', '        return False', '    host = value.split("://", 1)[1].split("/")[0].split("@")[-1].split(":")[0].lower()', '    if host in ("localhost", "metadata", "metadata.google.internal") or host.startswith("["):', '        return False', '    if _re_ssrf.match(r"^(127\\.|10\\.|169\\.254\\.|192\\.168\\.|0\\.|172\\.(1[6-9]|2\\d|3[01])\\.)", host):', '        return False', '    return True', ''])
+
+_MARKUP_CALL = re.compile(r"\bMarkup\s*\(")
+# an f-string that really builds HTML: it contains an actual tag, not just a "<"
+_FSTRING_HTML = re.compile(r"""f(?P<q>["'])(?P<body>[^"'\n]*</?[a-zA-Z][a-zA-Z0-9]*[^<>"'\n]*>[^"'\n]*)(?P=q)""")
+_FS_PLACE = re.compile(r"\{([A-Za-z_]\w*)\}")
+
+
+def _tainted_name(src: str, name: str) -> bool:
+    if re.search(r"\b" + re.escape(name) + r"\s*=\s*[^\n]*(?:request\.|req\.|\.args|\.json|\.form|\.params|\.query)", src):
+        return True
+    for m in re.finditer(r"(?:async\s+)?def\s+\w+\s*\(([^)]*)\)", src):
+        params = {q.split(":")[0].split("=")[0].strip() for q in m.group(1).split(",") if q.strip()}
+        if name in params:
+            return True
+    return False
+
+
+def rewrite_ssrf(src: str):
+    """Require a user-supplied fetch URL to be a public http(s) address."""
+    lines = src.splitlines(keepends=True)
+    out, notes, need_helper = [], [], False
+    for i, line in enumerate(lines):
+        m = _FETCH_CALL.match(line.rstrip("\n"))
+        if not m:
+            out.append(line)
+            continue
+        url = m.group("url")
+        before = "".join(lines[max(0, i - 6):i])
+        if _SSRF_GUARDED.search(before) or _SSRF_GUARDED.search(line) or not _tainted_name(src, url):
+            out.append(line)
+            continue
+        indent = m.group("indent")
+        out.append(indent + "if not " + _SSRF_HELPER + "(" + url + "):\n")
+        out.append(_error_stmt(src, indent) + "\n")
+        out.append(line)
+        need_helper = True
+        notes.append("SSRF: " + url + " must be a public http(s) URL before it is fetched")
+    if not need_helper:
+        return None, []
+    body = "".join(out)
+    if ("def " + _SSRF_HELPER) not in body:
+        idx = 0
+        for mm in re.finditer(r"^(?:import |from )[^\n]*\n", body, re.M):
+            idx = mm.end()
+        body = body[:idx] + "\n\n" + _SSRF_HELPER_SRC + "\n" + body[idx:]
+    return _ensure_import(body), notes
+
+
+def rewrite_xss(src: str):
+    """Escape user data that is placed straight into HTML."""
+    new, notes = src, []
+    if _MARKUP_CALL.search(new):
+        new = _MARKUP_CALL.sub("escape(", new)
+        notes.append("XSS: Markup() replaced with escape() so user data is not trusted as HTML")
+
+    def _fix(m):
+        # only values that actually carry user input are escaped; escaping internal
+        # values would change output the project's own tests may depend on
+        fixed = _FS_PLACE.sub(
+            lambda q: "{escape(" + q.group(1) + ")}" if _tainted_name(src, q.group(1)) else q.group(0),
+            m.group("body"))
+        return "f" + m.group("q") + fixed + m.group("q")
+
+    if "escape(" not in new:
+        candidate = _FSTRING_HTML.sub(_fix, new)
+        if candidate != new and "{escape(" in candidate:
+            new = candidate
+            notes.append("XSS: values interpolated into an HTML f-string are now escaped")
+    if not notes:
+        return None, []
+    if not re.search(r"^\s*from\s+(?:markupsafe|flask)\s+import[^\n]*\bescape\b", new, re.M):
+        new = "from markupsafe import escape\n" + new
+    return new, notes
+
+
 def apply(workdir, variant: str = "containment"):
     """Returns (originals, notes) — same contract as sqlfix/safefix."""
     workdir = Path(workdir)
@@ -125,6 +208,12 @@ def apply(workdir, variant: str = "containment"):
         if r is not None:
             new, file_notes = r, file_notes + n
         r, n = rewrite_auth(new)
+        if r is not None:
+            new, file_notes = r, file_notes + n
+        r, n = rewrite_ssrf(new)
+        if r is not None:
+            new, file_notes = r, file_notes + n
+        r, n = rewrite_xss(new)
         if r is not None:
             new, file_notes = r, file_notes + n
         if new != text:
