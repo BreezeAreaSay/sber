@@ -915,18 +915,22 @@ def vote_kv(st: State):
             break
         st.retry_note = note
         saved_extra = dict(llm.extra)
+        saved_max = llm.max_tokens
         if think and llm.extra:
             llm.extra = {"chat_template_kwargs": {"enable_thinking": True}}
+            llm.max_tokens = max(llm.max_tokens, 8192)  # reasoning tokens count against the cap
         llm.temperature = temp
         st.kv_nudges = 0
+        before = oracle.read_text(sp.deliverable)
         log(f"kv vote: independent attempt {len(attempts) + 1} (thinking={'on' if think and llm.extra else 'off'})")
         try:
             run_loop(st)
         finally:
             llm.extra = saved_extra
+            llm.max_tokens = saved_max
         ans = _kv_answer(st)
-        if ans is None:
-            log("kv vote: attempt produced no valid answer")
+        if ans is None or oracle.read_text(sp.deliverable) == before:
+            log("kv vote: attempt produced no new answer")
             continue
         attempts.append(ans)
         if all(a == attempts[0] for a in attempts):

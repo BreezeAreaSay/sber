@@ -255,11 +255,21 @@ def data_heads(root: Path, max_files: int = 40, head_lines: int = 4, line_chars:
     return "\n".join(out)
 
 
+_PROGRAM_OUTPUT_CACHE = {}
+
+
 def program_outputs(root: Path, max_programs: int = 8, timeout: int = 6):
     """Run the challenge's own programs (ELF binaries, python/shell scripts) with no
-    arguments and with --help, capturing what they print. Yields (label, bytes)."""
+    arguments and with --help, capturing what they print. Returns [(label, bytes)].
+    Memoised per directory: the flag scan and the briefing both ask for it."""
+    key = str(Path(root).resolve())
+    if key in _PROGRAM_OUTPUT_CACHE:
+        return _PROGRAM_OUTPUT_CACHE[key]
     results = []
+    _PROGRAM_OUTPUT_CACHE[key] = results
     count = 0
+    safe_env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "PYTHONIOENCODING")}
+    safe_env["TERM"] = "dumb"
     for p in iter_files(Path(root), limit=200):
         if count >= max_programs:
             break
@@ -288,7 +298,7 @@ def program_outputs(root: Path, max_programs: int = 8, timeout: int = 6):
         for argv in cmds:
             try:
                 r = subprocess.run(argv, cwd=str(p.parent), stdin=subprocess.DEVNULL, capture_output=True,
-                                   timeout=timeout, env={**os.environ, "TERM": "dumb"})
+                                   timeout=timeout, env=safe_env)
                 out = (r.stdout or b"") + (b"\n[stderr] " + r.stderr if r.stderr else b"")
             except subprocess.TimeoutExpired as exc:
                 out = (exc.stdout or b"") + b"\n[timed out]"
