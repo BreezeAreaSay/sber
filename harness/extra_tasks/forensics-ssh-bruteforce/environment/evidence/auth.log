@@ -1,0 +1,263 @@
+# host_tz=Europe/Berlin — syslog local civil time on bastion-02; year 2026.
+Jun 12 03:11:06 bastion-02 sshd[2201]: Accepted publickey for ops from 10.20.0.15 port 52937 ssh2: ED25519 SHA256:abcd
+Jun 12 03:11:07 bastion-02 sshd[2202]: Failed password for invalid user git from 203.0.113.194 port 43084 ssh2
+Jun 12 03:11:13 bastion-02 sshd[2203]: Failed password for root from 203.0.113.77 port 42816 ssh2
+Jun 12 03:11:20 bastion-02 sshd[2204]: Failed password for admin from 203.0.113.194 port 42972 ssh2
+Jun 12 03:11:29 bastion-02 sshd[2205]: Failed password for svc-backup from 203.0.113.194 port 58528 ssh2
+Jun 12 03:11:31 bastion-02 sshd[2206]: Accepted publickey for ops from 10.20.0.15 port 59103 ssh2: ED25519 SHA256:abcd
+Jun 12 03:11:32 bastion-02 sshd[2207]: Failed password for root from 198.51.100.201 port 47244 ssh2
+Jun 12 03:11:33 bastion-02 sshd[2208]: Failed password for deploy from 203.0.113.77 port 53734 ssh2
+Jun 12 03:11:36 bastion-02 sshd[2209]: Failed password for invalid user git from 203.0.113.194 port 50108 ssh2
+Jun 12 03:11:45 bastion-02 sshd[2210]: Failed password for root from 203.0.113.77 port 59057 ssh2
+Jun 12 03:11:49 bastion-02 sshd[2211]: Failed password for invalid user git from 203.0.113.194 port 42057 ssh2
+Jun 12 03:11:50 bastion-02 sshd[2212]: Failed password for ubuntu from 198.51.100.201 port 57423 ssh2
+Jun 12 03:11:57 bastion-02 sshd[2213]: Failed password for git from 198.51.100.201 port 54849 ssh2
+Jun 12 03:12:03 bastion-02 sshd[2214]: Failed password for svc-backup from 203.0.113.194 port 45890 ssh2
+Jun 12 03:12:07 bastion-02 sshd[2215]: Failed password for deploy from 203.0.113.194 port 57209 ssh2
+Jun 12 03:12:15 bastion-02 sshd[2216]: Connection closed by authenticating user root 198.51.100.201 port 49435 [preauth]
+Jun 12 03:12:17 bastion-02 sshd[2217]: Failed password for invalid user oracle from 203.0.113.194 port 45405 ssh2
+Jun 12 03:12:23 bastion-02 sshd[2218]: Failed password for invalid user oracle from 203.0.113.194 port 53818 ssh2
+Jun 12 03:12:24 bastion-02 sshd[2219]: Accepted publickey for ops from 10.20.0.15 port 42543 ssh2: ED25519 SHA256:abcd
+Jun 12 03:12:33 bastion-02 sshd[2220]: Failed password for deploy from 192.0.2.150 port 51474 ssh2
+Jun 12 03:12:41 bastion-02 sshd[2221]: Failed password for root from 198.51.100.201 port 43066 ssh2
+Jun 12 03:12:46 bastion-02 sshd[2222]: Failed password for ubuntu from 203.0.113.194 port 42129 ssh2
+Jun 12 03:12:47 bastion-02 sshd[2223]: Failed password for ubuntu from 192.0.2.150 port 58938 ssh2
+Jun 12 03:12:55 bastion-02 sshd[2224]: Failed password for invalid user oracle from 203.0.113.194 port 51370 ssh2
+Jun 12 03:12:56 bastion-02 sshd[2225]: Accepted publickey for ops from 10.20.0.15 port 51647 ssh2: ED25519 SHA256:abcd
+Jun 12 03:12:59 bastion-02 sshd[2226]: Failed password for root from 198.51.100.201 port 47150 ssh2
+Jun 12 03:13:04 bastion-02 sshd[2227]: Failed password for admin from 203.0.113.194 port 53038 ssh2
+Jun 12 03:13:11 bastion-02 sshd[2228]: Connection closed by authenticating user root 198.51.100.201 port 42640 [preauth]
+Jun 12 03:13:14 bastion-02 sshd[2229]: Failed password for invalid user git from 203.0.113.194 port 49104 ssh2
+Jun 12 03:13:17 bastion-02 sshd[2230]: Failed password for ubuntu from 192.0.2.150 port 53608 ssh2
+Jun 12 03:13:23 bastion-02 sshd[2231]: Failed password for admin from 198.51.100.201 port 44945 ssh2
+Jun 12 03:13:25 bastion-02 sshd[2232]: Failed password for admin from 203.0.113.194 port 47645 ssh2
+Jun 12 03:13:26 bastion-02 sshd[2233]: Failed password for invalid user git from 203.0.113.194 port 45975 ssh2
+Jun 12 03:13:31 bastion-02 sshd[2234]: Failed password for admin from 203.0.113.194 port 53728 ssh2
+Jun 12 03:13:40 bastion-02 sshd[2235]: Failed password for invalid user git from 203.0.113.194 port 50440 ssh2
+Jun 12 03:13:43 bastion-02 sshd[2236]: Failed password for oracle from 198.51.100.23 port 58326 ssh2
+Jun 12 03:13:50 bastion-02 sshd[2237]: Failed password for invalid user oracle from 203.0.113.194 port 43392 ssh2
+Jun 12 03:13:58 bastion-02 sshd[2238]: Failed password for admin from 198.51.100.23 port 42206 ssh2
+Jun 12 03:14:02 bastion-02 sshd[2239]: Failed password for root from 203.0.113.194 port 51142 ssh2
+Jun 12 03:14:03 bastion-02 sshd[2240]: Failed password for invalid user git from 203.0.113.194 port 44956 ssh2
+Jun 12 03:14:12 bastion-02 sshd[2241]: Failed password for deploy from 203.0.113.194 port 40835 ssh2
+Jun 12 03:14:14 bastion-02 sshd[2242]: Connection closed by authenticating user root 198.51.100.201 port 44867 [preauth]
+Jun 12 03:14:19 bastion-02 sshd[2243]: Accepted publickey for ops from 10.20.0.15 port 59735 ssh2: ED25519 SHA256:abcd
+Jun 12 03:14:25 bastion-02 sshd[2244]: Failed password for root from 203.0.113.194 port 55993 ssh2
+Jun 12 03:14:33 bastion-02 sshd[2245]: Failed password for deploy from 203.0.113.194 port 42814 ssh2
+Jun 12 03:14:36 bastion-02 sshd[2246]: Failed password for deploy from 203.0.113.194 port 48675 ssh2
+Jun 12 03:14:44 bastion-02 sshd[2247]: Failed password for git from 203.0.113.77 port 40756 ssh2
+Jun 12 03:14:48 bastion-02 sshd[2248]: Accepted publickey for ops from 10.20.0.15 port 57309 ssh2: ED25519 SHA256:abcd
+Jun 12 03:14:54 bastion-02 sshd[2249]: Failed password for invalid user git from 203.0.113.194 port 40886 ssh2
+Jun 12 03:15:03 bastion-02 sshd[2250]: Failed password for ubuntu from 203.0.113.194 port 42982 ssh2
+Jun 12 03:15:08 bastion-02 sshd[2251]: Failed password for admin from 203.0.113.194 port 51655 ssh2
+Jun 12 03:15:12 bastion-02 sshd[2252]: Failed password for svc-backup from 203.0.113.194 port 56472 ssh2
+Jun 12 03:15:18 bastion-02 sshd[2253]: Failed password for svc-backup from 203.0.113.77 port 47844 ssh2
+Jun 12 03:15:25 bastion-02 sshd[2254]: Failed password for admin from 203.0.113.77 port 56961 ssh2
+Jun 12 03:15:33 bastion-02 sshd[2255]: Failed password for root from 203.0.113.194 port 40915 ssh2
+Jun 12 03:15:38 bastion-02 sshd[2256]: Failed password for admin from 203.0.113.194 port 59829 ssh2
+Jun 12 03:15:44 bastion-02 sshd[2257]: Failed password for ubuntu from 203.0.113.194 port 51453 ssh2
+Jun 12 03:15:50 bastion-02 sshd[2258]: Failed password for root from 203.0.113.194 port 47433 ssh2
+Jun 12 03:15:58 bastion-02 sshd[2259]: Failed password for admin from 203.0.113.194 port 55815 ssh2
+Jun 12 03:15:59 bastion-02 sshd[2260]: Failed password for ubuntu from 203.0.113.194 port 51272 ssh2
+Jun 12 03:16:01 bastion-02 sshd[2261]: Failed password for oracle from 198.51.100.23 port 46531 ssh2
+Jun 12 03:16:09 bastion-02 sshd[2262]: Connection closed by authenticating user root 198.51.100.201 port 50895 [preauth]
+Jun 12 03:16:11 bastion-02 sshd[2263]: Failed password for oracle from 198.51.100.201 port 53152 ssh2
+Jun 12 03:16:13 bastion-02 sshd[2264]: Failed password for admin from 203.0.113.77 port 40902 ssh2
+Jun 12 03:16:16 bastion-02 sshd[2265]: Failed password for svc-backup from 198.51.100.201 port 44789 ssh2
+Jun 12 03:16:24 bastion-02 sshd[2266]: Failed password for admin from 192.0.2.150 port 57978 ssh2
+Jun 12 03:16:33 bastion-02 sshd[2267]: Failed password for root from 203.0.113.194 port 43367 ssh2
+Jun 12 03:16:42 bastion-02 sshd[2268]: Failed password for oracle from 203.0.113.77 port 46383 ssh2
+Jun 12 03:16:46 bastion-02 sshd[2269]: Failed password for admin from 203.0.113.194 port 49599 ssh2
+Jun 12 03:16:55 bastion-02 sshd[2270]: Failed password for invalid user git from 203.0.113.194 port 50682 ssh2
+Jun 12 03:17:00 bastion-02 sshd[2271]: Failed password for svc-backup from 203.0.113.194 port 44295 ssh2
+Jun 12 03:17:01 bastion-02 sshd[2272]: Connection closed by authenticating user root 192.0.2.150 port 55013 [preauth]
+Jun 12 03:17:10 bastion-02 sshd[2273]: Failed password for invalid user git from 203.0.113.194 port 44284 ssh2
+Jun 12 03:17:19 bastion-02 sshd[2274]: Failed password for invalid user git from 203.0.113.194 port 40612 ssh2
+Jun 12 03:17:27 bastion-02 sshd[2275]: Failed password for svc-backup from 198.51.100.23 port 44908 ssh2
+Jun 12 03:17:30 bastion-02 sshd[2276]: Failed password for invalid user git from 203.0.113.194 port 43943 ssh2
+Jun 12 03:17:39 bastion-02 sshd[2277]: Failed password for ubuntu from 203.0.113.194 port 56985 ssh2
+Jun 12 03:17:48 bastion-02 sshd[2278]: Failed password for git from 198.51.100.23 port 41861 ssh2
+Jun 12 03:17:52 bastion-02 sshd[2279]: Failed password for root from 203.0.113.194 port 43202 ssh2
+Jun 12 03:18:01 bastion-02 sshd[2280]: Failed password for root from 203.0.113.194 port 42076 ssh2
+Jun 12 03:18:09 bastion-02 sshd[2281]: Failed password for invalid user git from 203.0.113.194 port 59861 ssh2
+Jun 12 03:18:18 bastion-02 sshd[2282]: Failed password for deploy from 203.0.113.194 port 54822 ssh2
+Jun 12 03:18:27 bastion-02 sshd[2283]: Failed password for invalid user oracle from 203.0.113.194 port 56638 ssh2
+Jun 12 03:18:31 bastion-02 sshd[2284]: Failed password for git from 192.0.2.150 port 46638 ssh2
+Jun 12 03:18:39 bastion-02 sshd[2285]: Failed password for root from 203.0.113.194 port 52856 ssh2
+Jun 12 03:18:47 bastion-02 sshd[2286]: Failed password for ubuntu from 203.0.113.194 port 47885 ssh2
+Jun 12 03:18:54 bastion-02 sshd[2287]: Failed password for ubuntu from 203.0.113.194 port 49921 ssh2
+Jun 12 03:18:56 bastion-02 sshd[2288]: Connection closed by authenticating user root 203.0.113.77 port 51999 [preauth]
+Jun 12 03:18:59 bastion-02 sshd[2289]: Failed password for admin from 203.0.113.194 port 55326 ssh2
+Jun 12 03:19:03 bastion-02 sshd[2290]: Failed password for oracle from 198.51.100.23 port 55966 ssh2
+Jun 12 03:19:06 bastion-02 sshd[2291]: Accepted publickey for ops from 10.20.0.15 port 47330 ssh2: ED25519 SHA256:abcd
+Jun 12 03:19:09 bastion-02 sshd[2292]: Failed password for deploy from 198.51.100.201 port 53804 ssh2
+Jun 12 03:19:13 bastion-02 sshd[2293]: Failed password for root from 203.0.113.194 port 51991 ssh2
+Jun 12 03:19:14 bastion-02 sshd[2294]: Failed password for invalid user oracle from 203.0.113.194 port 54432 ssh2
+Jun 12 03:19:15 bastion-02 sshd[2295]: Failed password for invalid user git from 203.0.113.194 port 49681 ssh2
+Jun 12 03:19:24 bastion-02 sshd[2296]: Accepted publickey for ops from 10.20.0.15 port 43697 ssh2: ED25519 SHA256:abcd
+Jun 12 03:19:28 bastion-02 sshd[2297]: Accepted publickey for ops from 10.20.0.15 port 43433 ssh2: ED25519 SHA256:abcd
+Jun 12 03:19:30 bastion-02 sshd[2298]: Failed password for root from 203.0.113.194 port 45949 ssh2
+Jun 12 03:19:35 bastion-02 sshd[2299]: Failed password for svc-backup from 198.51.100.201 port 48474 ssh2
+Jun 12 03:19:42 bastion-02 sshd[2300]: Failed password for invalid user git from 203.0.113.194 port 58697 ssh2
+Jun 12 03:19:50 bastion-02 sshd[2301]: Failed password for deploy from 198.51.100.23 port 41885 ssh2
+Jun 12 03:19:53 bastion-02 sshd[2302]: Failed password for root from 203.0.113.194 port 48812 ssh2
+Jun 12 03:19:54 bastion-02 sshd[2303]: Failed password for root from 192.0.2.150 port 59928 ssh2
+Jun 12 03:19:58 bastion-02 sshd[2304]: Failed password for svc-backup from 203.0.113.194 port 43987 ssh2
+Jun 12 03:20:06 bastion-02 sshd[2305]: Failed password for invalid user git from 203.0.113.194 port 53689 ssh2
+Jun 12 03:20:11 bastion-02 sshd[2306]: Failed password for git from 198.51.100.23 port 47813 ssh2
+Jun 12 03:20:13 bastion-02 sshd[2307]: Accepted publickey for ops from 10.20.0.15 port 48581 ssh2: ED25519 SHA256:abcd
+Jun 12 03:20:14 bastion-02 sshd[2308]: Failed password for deploy from 203.0.113.194 port 49994 ssh2
+Jun 12 03:20:23 bastion-02 sshd[2309]: Failed password for oracle from 192.0.2.150 port 56386 ssh2
+Jun 12 03:20:26 bastion-02 sshd[2310]: Failed password for svc-backup from 203.0.113.194 port 40595 ssh2
+Jun 12 03:20:31 bastion-02 sshd[2311]: Failed password for root from 203.0.113.194 port 56569 ssh2
+Jun 12 03:20:40 bastion-02 sshd[2312]: Accepted publickey for ops from 10.20.0.15 port 56850 ssh2: ED25519 SHA256:abcd
+Jun 12 03:20:48 bastion-02 sshd[2313]: Failed password for invalid user oracle from 203.0.113.194 port 43482 ssh2
+Jun 12 03:20:55 bastion-02 sshd[2314]: Failed password for git from 198.51.100.201 port 50085 ssh2
+Jun 12 03:20:59 bastion-02 sshd[2315]: Accepted publickey for ops from 10.20.0.15 port 51229 ssh2: ED25519 SHA256:abcd
+Jun 12 03:21:03 bastion-02 sshd[2316]: Failed password for oracle from 203.0.113.77 port 51388 ssh2
+Jun 12 03:21:04 bastion-02 sshd[2317]: Failed password for root from 198.51.100.23 port 48375 ssh2
+Jun 12 03:21:11 bastion-02 sshd[2318]: Failed password for root from 203.0.113.194 port 52480 ssh2
+Jun 12 03:21:20 bastion-02 sshd[2319]: Failed password for git from 192.0.2.150 port 47936 ssh2
+Jun 12 03:21:25 bastion-02 sshd[2320]: Failed password for admin from 203.0.113.194 port 45162 ssh2
+Jun 12 03:21:30 bastion-02 sshd[2321]: Failed password for deploy from 203.0.113.194 port 51932 ssh2
+Jun 12 03:21:36 bastion-02 sshd[2322]: Accepted publickey for ops from 10.20.0.15 port 57926 ssh2: ED25519 SHA256:abcd
+Jun 12 03:21:42 bastion-02 sshd[2323]: Failed password for deploy from 203.0.113.194 port 47139 ssh2
+Jun 12 03:21:48 bastion-02 sshd[2324]: Failed password for deploy from 203.0.113.194 port 52505 ssh2
+Jun 12 03:21:50 bastion-02 sshd[2325]: Failed password for invalid user git from 203.0.113.194 port 46585 ssh2
+Jun 12 03:21:54 bastion-02 sshd[2326]: Failed password for root from 203.0.113.194 port 42977 ssh2
+Jun 12 03:21:59 bastion-02 sshd[2327]: Failed password for oracle from 203.0.113.77 port 59228 ssh2
+Jun 12 03:22:00 bastion-02 sshd[2328]: Failed password for deploy from 203.0.113.194 port 49969 ssh2
+Jun 12 03:22:04 bastion-02 sshd[2329]: Failed password for invalid user git from 203.0.113.194 port 45087 ssh2
+Jun 12 03:22:11 bastion-02 sshd[2330]: Failed password for admin from 198.51.100.201 port 49311 ssh2
+Jun 12 03:22:14 bastion-02 sshd[2331]: Failed password for svc-backup from 203.0.113.194 port 56809 ssh2
+Jun 12 03:22:21 bastion-02 sshd[2332]: Failed password for git from 203.0.113.77 port 56527 ssh2
+Jun 12 03:22:22 bastion-02 sshd[2333]: Failed password for root from 203.0.113.77 port 41021 ssh2
+Jun 12 03:22:23 bastion-02 sshd[2334]: Failed password for deploy from 203.0.113.194 port 43437 ssh2
+Jun 12 03:22:30 bastion-02 sshd[2335]: Failed password for ubuntu from 198.51.100.23 port 40617 ssh2
+Jun 12 03:22:39 bastion-02 sshd[2336]: Failed password for deploy from 198.51.100.201 port 40108 ssh2
+Jun 12 03:22:47 bastion-02 sshd[2337]: Failed password for ubuntu from 198.51.100.23 port 57235 ssh2
+Jun 12 03:22:49 bastion-02 sshd[2338]: Failed password for deploy from 198.51.100.201 port 42439 ssh2
+Jun 12 03:22:54 bastion-02 sshd[2339]: Failed password for svc-backup from 203.0.113.194 port 46724 ssh2
+Jun 12 03:22:58 bastion-02 sshd[2340]: Failed password for oracle from 198.51.100.201 port 52535 ssh2
+Jun 12 03:23:00 bastion-02 sshd[2341]: Failed password for ubuntu from 203.0.113.194 port 49414 ssh2
+Jun 12 03:23:01 bastion-02 sshd[2342]: Failed password for root from 203.0.113.77 port 59651 ssh2
+Jun 12 03:23:04 bastion-02 sshd[2343]: Failed password for ubuntu from 203.0.113.194 port 49975 ssh2
+Jun 12 03:23:07 bastion-02 sshd[2344]: Failed password for root from 203.0.113.194 port 55918 ssh2
+Jun 12 03:23:12 bastion-02 sshd[2345]: Accepted publickey for ops from 10.20.0.15 port 43261 ssh2: ED25519 SHA256:abcd
+Jun 12 03:23:16 bastion-02 sshd[2346]: Failed password for ubuntu from 192.0.2.150 port 56925 ssh2
+Jun 12 03:23:21 bastion-02 sshd[2347]: Failed password for invalid user oracle from 203.0.113.194 port 43883 ssh2
+Jun 12 03:23:30 bastion-02 sshd[2348]: Failed password for root from 203.0.113.194 port 55497 ssh2
+Jun 12 03:23:31 bastion-02 sshd[2349]: Failed password for root from 203.0.113.194 port 56600 ssh2
+Jun 12 03:23:39 bastion-02 sshd[2350]: Accepted publickey for ops from 10.20.0.15 port 52676 ssh2: ED25519 SHA256:abcd
+Jun 12 03:23:43 bastion-02 sshd[2351]: Connection closed by authenticating user root 203.0.113.77 port 42444 [preauth]
+Jun 12 03:23:45 bastion-02 sshd[2352]: Failed password for invalid user git from 203.0.113.194 port 48578 ssh2
+Jun 12 03:23:51 bastion-02 sshd[2353]: Failed password for svc-backup from 203.0.113.194 port 56670 ssh2
+Jun 12 03:23:56 bastion-02 sshd[2354]: Connection closed by authenticating user root 192.0.2.150 port 47581 [preauth]
+Jun 12 03:24:04 bastion-02 sshd[2355]: Connection closed by authenticating user root 198.51.100.201 port 52913 [preauth]
+Jun 12 03:24:05 bastion-02 sshd[2356]: Failed password for invalid user oracle from 203.0.113.194 port 54770 ssh2
+Jun 12 03:24:12 bastion-02 sshd[2357]: Failed password for admin from 203.0.113.194 port 53637 ssh2
+Jun 12 03:24:18 bastion-02 sshd[2358]: Failed password for root from 203.0.113.194 port 50856 ssh2
+Jun 12 03:24:19 bastion-02 sshd[2359]: Failed password for deploy from 203.0.113.194 port 53050 ssh2
+Jun 12 03:24:21 bastion-02 sshd[2360]: Accepted publickey for ops from 10.20.0.15 port 46414 ssh2: ED25519 SHA256:abcd
+Jun 12 03:24:22 bastion-02 sshd[2361]: Connection closed by authenticating user root 192.0.2.150 port 48297 [preauth]
+Jun 12 03:24:28 bastion-02 sshd[2362]: Failed password for invalid user oracle from 203.0.113.194 port 59306 ssh2
+Jun 12 03:24:30 bastion-02 sshd[2363]: Failed password for invalid user oracle from 203.0.113.194 port 49016 ssh2
+Jun 12 03:24:31 bastion-02 sshd[2364]: Failed password for root from 203.0.113.194 port 49359 ssh2
+Jun 12 03:24:34 bastion-02 sshd[2365]: Failed password for deploy from 203.0.113.194 port 54294 ssh2
+Jun 12 03:24:43 bastion-02 sshd[2366]: Failed password for svc-backup from 203.0.113.194 port 52233 ssh2
+Jun 12 03:24:50 bastion-02 sshd[2367]: Connection closed by authenticating user root 198.51.100.201 port 58158 [preauth]
+Jun 12 03:24:59 bastion-02 sshd[2368]: Failed password for root from 203.0.113.194 port 41621 ssh2
+Jun 12 03:25:06 bastion-02 sshd[2369]: Failed password for svc-backup from 203.0.113.194 port 44540 ssh2
+Jun 12 03:25:11 bastion-02 sshd[2370]: Failed password for invalid user git from 203.0.113.194 port 44171 ssh2
+Jun 12 03:25:14 bastion-02 sshd[2371]: Failed password for deploy from 203.0.113.194 port 49232 ssh2
+Jun 12 03:25:19 bastion-02 sshd[2372]: Failed password for ubuntu from 203.0.113.194 port 48525 ssh2
+Jun 12 03:25:26 bastion-02 sshd[2373]: Failed password for oracle from 192.0.2.150 port 58262 ssh2
+Jun 12 03:25:33 bastion-02 sshd[2374]: Accepted password for svc-backup from 203.0.113.194 port 45297 ssh2
+Jun 12 03:25:33 bastion-02 sshd[2374]: pam_unix(sshd:session): session opened for user svc-backup by (uid=0)
+Jun 12 03:25:35 bastion-02 sshd[2375]: Failed password for svc-backup from 203.0.113.194 port 56288 ssh2
+Jun 12 03:25:44 bastion-02 sshd[2376]: Failed password for deploy from 203.0.113.194 port 54744 ssh2
+Jun 12 03:25:51 bastion-02 sshd[2377]: Failed password for admin from 203.0.113.194 port 47998 ssh2
+Jun 12 03:25:53 bastion-02 sshd[2378]: Failed password for invalid user git from 203.0.113.194 port 42984 ssh2
+Jun 12 03:25:59 bastion-02 sshd[2379]: Failed password for deploy from 203.0.113.194 port 58665 ssh2
+Jun 12 03:26:03 bastion-02 sshd[2380]: Connection closed by authenticating user root 198.51.100.201 port 52544 [preauth]
+Jun 12 03:26:10 bastion-02 sshd[2381]: Failed password for oracle from 203.0.113.77 port 48855 ssh2
+Jun 12 03:26:16 bastion-02 sshd[2382]: Failed password for deploy from 198.51.100.201 port 58818 ssh2
+Jun 12 03:26:22 bastion-02 sshd[2383]: Failed password for invalid user git from 203.0.113.194 port 57341 ssh2
+Jun 12 03:26:26 bastion-02 sshd[2384]: Failed password for admin from 203.0.113.194 port 52601 ssh2
+Jun 12 03:26:33 bastion-02 sshd[2385]: Failed password for deploy from 198.51.100.201 port 40714 ssh2
+Jun 12 03:26:36 bastion-02 sshd[2386]: Failed password for ubuntu from 203.0.113.194 port 55508 ssh2
+Jun 12 03:26:44 bastion-02 sshd[2387]: Failed password for invalid user oracle from 203.0.113.194 port 57296 ssh2
+Jun 12 03:26:52 bastion-02 sshd[2388]: Accepted publickey for ops from 10.20.0.15 port 48141 ssh2: ED25519 SHA256:abcd
+Jun 12 03:26:54 bastion-02 sshd[2389]: Failed password for admin from 203.0.113.194 port 57116 ssh2
+Jun 12 03:26:56 bastion-02 sshd[2390]: Accepted publickey for ops from 10.20.0.15 port 54985 ssh2: ED25519 SHA256:abcd
+Jun 12 03:26:58 bastion-02 sshd[2391]: Failed password for root from 198.51.100.23 port 44117 ssh2
+Jun 12 03:27:02 bastion-02 sshd[2392]: Failed password for ubuntu from 198.51.100.23 port 49954 ssh2
+Jun 12 03:27:05 bastion-02 sshd[2393]: Failed password for ubuntu from 198.51.100.201 port 43674 ssh2
+Jun 12 03:27:07 bastion-02 sshd[2394]: Failed password for invalid user git from 203.0.113.194 port 59100 ssh2
+Jun 12 03:27:11 bastion-02 sshd[2395]: Failed password for admin from 203.0.113.194 port 59695 ssh2
+Jun 12 03:27:12 bastion-02 sshd[2396]: Failed password for deploy from 203.0.113.194 port 55095 ssh2
+Jun 12 03:27:17 bastion-02 sshd[2397]: Accepted publickey for ops from 10.20.0.15 port 47941 ssh2: ED25519 SHA256:abcd
+Jun 12 03:27:25 bastion-02 sshd[2398]: Failed password for invalid user git from 203.0.113.194 port 48095 ssh2
+Jun 12 03:27:26 bastion-02 sshd[2399]: Accepted publickey for ops from 10.20.0.15 port 50072 ssh2: ED25519 SHA256:abcd
+Jun 12 03:27:27 bastion-02 sshd[2400]: Failed password for invalid user oracle from 203.0.113.194 port 53763 ssh2
+Jun 12 03:27:29 bastion-02 sshd[2401]: Failed password for ubuntu from 203.0.113.194 port 53904 ssh2
+Jun 12 03:27:35 bastion-02 sshd[2402]: Failed password for root from 203.0.113.194 port 51077 ssh2
+Jun 12 03:27:42 bastion-02 sshd[2403]: Failed password for invalid user oracle from 203.0.113.194 port 46490 ssh2
+Jun 12 03:27:43 bastion-02 sshd[2404]: Failed password for admin from 198.51.100.23 port 56242 ssh2
+Jun 12 03:27:47 bastion-02 sshd[2405]: Failed password for svc-backup from 203.0.113.194 port 46354 ssh2
+Jun 12 03:27:51 bastion-02 sshd[2406]: Failed password for deploy from 203.0.113.194 port 49664 ssh2
+Jun 12 03:27:53 bastion-02 sshd[2407]: Accepted publickey for ops from 10.20.0.15 port 56245 ssh2: ED25519 SHA256:abcd
+Jun 12 03:27:56 bastion-02 sshd[2408]: Connection closed by authenticating user root 198.51.100.201 port 53665 [preauth]
+Jun 12 03:27:57 bastion-02 sshd[2409]: Accepted publickey for ops from 10.20.0.15 port 44796 ssh2: ED25519 SHA256:abcd
+Jun 12 03:28:04 bastion-02 sshd[2410]: Failed password for root from 203.0.113.194 port 59533 ssh2
+Jun 12 03:28:07 bastion-02 sshd[2411]: Failed password for ubuntu from 203.0.113.194 port 41970 ssh2
+Jun 12 03:28:10 bastion-02 sshd[2412]: Failed password for ubuntu from 203.0.113.194 port 50295 ssh2
+Jun 12 03:28:12 bastion-02 sshd[2413]: Accepted publickey for ops from 10.20.0.15 port 45427 ssh2: ED25519 SHA256:abcd
+Jun 12 03:28:18 bastion-02 sshd[2414]: Failed password for ubuntu from 203.0.113.194 port 57196 ssh2
+Jun 12 03:28:26 bastion-02 sshd[2415]: Failed password for ubuntu from 203.0.113.194 port 52406 ssh2
+Jun 12 03:28:32 bastion-02 sshd[2416]: Accepted publickey for ops from 10.20.0.15 port 54497 ssh2: ED25519 SHA256:abcd
+Jun 12 03:28:35 bastion-02 sshd[2417]: Failed password for root from 203.0.113.194 port 49168 ssh2
+Jun 12 03:28:37 bastion-02 sshd[2418]: Failed password for root from 203.0.113.194 port 58387 ssh2
+Jun 12 03:28:41 bastion-02 sshd[2419]: Failed password for svc-backup from 203.0.113.194 port 50115 ssh2
+Jun 12 03:28:48 bastion-02 sshd[2420]: Failed password for ubuntu from 203.0.113.194 port 55514 ssh2
+Jun 12 03:28:52 bastion-02 sshd[2421]: Failed password for invalid user oracle from 203.0.113.194 port 46325 ssh2
+Jun 12 03:28:58 bastion-02 sshd[2422]: Failed password for invalid user oracle from 203.0.113.194 port 40992 ssh2
+Jun 12 03:29:05 bastion-02 sshd[2423]: Failed password for ubuntu from 203.0.113.194 port 53263 ssh2
+Jun 12 03:29:06 bastion-02 sshd[2424]: Failed password for invalid user oracle from 203.0.113.194 port 42050 ssh2
+Jun 12 03:29:07 bastion-02 sshd[2425]: Failed password for ubuntu from 203.0.113.194 port 42059 ssh2
+Jun 12 03:29:13 bastion-02 sshd[2426]: Failed password for deploy from 203.0.113.194 port 41428 ssh2
+Jun 12 03:29:18 bastion-02 sshd[2427]: Failed password for deploy from 192.0.2.150 port 49745 ssh2
+Jun 12 03:29:19 bastion-02 sshd[2428]: Failed password for root from 198.51.100.23 port 47663 ssh2
+Jun 12 03:29:21 bastion-02 sshd[2429]: Failed password for invalid user oracle from 203.0.113.194 port 52665 ssh2
+Jun 12 03:29:26 bastion-02 sshd[2430]: Connection closed by authenticating user root 198.51.100.201 port 44348 [preauth]
+Jun 12 03:29:34 bastion-02 sshd[2431]: Failed password for svc-backup from 203.0.113.194 port 49939 ssh2
+Jun 12 03:29:37 bastion-02 sshd[2432]: Failed password for svc-backup from 192.0.2.150 port 50470 ssh2
+Jun 12 03:29:45 bastion-02 sshd[2433]: Failed password for svc-backup from 203.0.113.194 port 59520 ssh2
+Jun 12 03:29:47 bastion-02 sshd[2434]: Failed password for invalid user oracle from 203.0.113.194 port 45240 ssh2
+Jun 12 03:29:51 bastion-02 sshd[2435]: Failed password for ubuntu from 203.0.113.194 port 41109 ssh2
+Jun 12 03:29:59 bastion-02 sshd[2436]: Failed password for admin from 192.0.2.150 port 53977 ssh2
+Jun 12 03:30:01 bastion-02 sshd[2437]: Accepted publickey for ops from 10.20.0.15 port 48679 ssh2: ED25519 SHA256:abcd
+Jun 12 03:30:03 bastion-02 sshd[2438]: Failed password for invalid user oracle from 203.0.113.194 port 56334 ssh2
+Jun 12 03:30:11 bastion-02 sshd[2439]: Failed password for admin from 203.0.113.194 port 53659 ssh2
+Jun 12 03:30:19 bastion-02 sshd[2440]: Failed password for ubuntu from 203.0.113.77 port 57647 ssh2
+Jun 12 03:30:21 bastion-02 sshd[2441]: Failed password for deploy from 192.0.2.150 port 49155 ssh2
+Jun 12 03:30:26 bastion-02 sshd[2442]: Failed password for ubuntu from 203.0.113.194 port 48530 ssh2
+Jun 12 03:30:30 bastion-02 sshd[2443]: Failed password for admin from 203.0.113.194 port 48039 ssh2
+Jun 12 03:30:34 bastion-02 sshd[2444]: Failed password for invalid user git from 203.0.113.194 port 46168 ssh2
+Jun 12 03:30:40 bastion-02 sshd[2445]: Failed password for deploy from 203.0.113.194 port 48059 ssh2
+Jun 12 03:30:49 bastion-02 sshd[2446]: Failed password for ubuntu from 203.0.113.194 port 43294 ssh2
+Jun 12 03:30:57 bastion-02 sshd[2447]: Accepted publickey for ops from 10.20.0.15 port 43353 ssh2: ED25519 SHA256:abcd
+Jun 12 03:30:58 bastion-02 sshd[2448]: Failed password for svc-backup from 203.0.113.194 port 47573 ssh2
+Jun 12 03:31:06 bastion-02 sshd[2449]: Connection closed by authenticating user root 198.51.100.23 port 49623 [preauth]
+Jun 12 03:31:10 bastion-02 sshd[2450]: Failed password for admin from 203.0.113.194 port 59676 ssh2
+Jun 12 03:31:14 bastion-02 sshd[2451]: Accepted publickey for ops from 10.20.0.15 port 52197 ssh2: ED25519 SHA256:abcd
+Jun 12 03:31:23 bastion-02 sshd[2452]: Connection closed by authenticating user root 198.51.100.201 port 59760 [preauth]
+Jun 12 03:31:28 bastion-02 sshd[2453]: Failed password for root from 198.51.100.23 port 59534 ssh2
+Jun 12 03:31:34 bastion-02 sshd[2454]: Failed password for deploy from 203.0.113.194 port 51141 ssh2
+Jun 12 03:31:37 bastion-02 sshd[2455]: Failed password for deploy from 203.0.113.194 port 41252 ssh2
+Jun 12 03:31:41 bastion-02 sshd[2456]: Failed password for oracle from 192.0.2.150 port 52183 ssh2
+Jun 12 03:31:44 bastion-02 sshd[2457]: Failed password for admin from 198.51.100.23 port 41031 ssh2
+Jun 12 03:31:52 bastion-02 sshd[2458]: Failed password for root from 203.0.113.194 port 53374 ssh2
+Jun 12 03:31:54 bastion-02 sshd[2459]: Failed password for ubuntu from 203.0.113.77 port 57498 ssh2
+Jun 12 03:31:56 bastion-02 sshd[2460]: Failed password for ubuntu from 198.51.100.201 port 48885 ssh2
+Jun 12 03:40:56 bastion-02 sshd[2461]: Accepted password for admin from 198.51.100.23 port 51000 ssh2

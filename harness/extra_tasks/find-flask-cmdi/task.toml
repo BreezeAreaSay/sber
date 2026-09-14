@@ -1,0 +1,6 @@
+[task]
+name = "extra/find-flask-cmdi"
+[agent]
+timeout_sec = 600.0
+[verifier]
+timeout_sec = 120.0

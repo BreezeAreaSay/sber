@@ -1,0 +1,4 @@
+attacker_ip=203.0.113.194
+compromised_account=svc-backup
+first_success_utc=2026-06-12T01:25:33Z
+failed_attempts=97

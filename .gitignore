@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+harness/out/
+harness/ctx/
+harness/results.log
+*.gguf
+submission.zip
+.venv/
