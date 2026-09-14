@@ -903,6 +903,9 @@ def vote_kv(st: State):
         return
     if os.environ.get("LOCAL_AGENT_NO_VOTE"):
         return
+    if st.seed and all(str(st.seed.get(k, "")) == first.get(k, "") for k in sp.keys):
+        log("kv vote: the answer equals the deterministic seed; no further attempts")
+        return
     attempts = [first]
     strategies = [
         (prompts.FORENSICS_SECOND_PASS, True, 0.2),
