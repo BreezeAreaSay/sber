@@ -469,21 +469,42 @@ def _failing_tests(output: str):
     return set(_FAILED_RE.findall(output or ""))
 
 
-def _baseline_tests(st: State):
-    """Run the project's tests once before we touch anything.
+def _control_run(st: State, module, originals: dict, failed_with_fix: set):
+    """Is this failure ours, or was the suite failing anyway?
 
-    A suite that is already failing — a database that is down, a service the runner
-    never started — must not cause a correct fix to be reverted: reverting would lose
-    the task for a reason that has nothing to do with the change."""
-    if st.test_baseline is not None or not st.spec.test_cmd:
-        return st.test_baseline
+    Asked only after a fix has failed the tests, and asked by putting the original code
+    back and running the same suite again. Doing it this way rather than measuring a
+    baseline up front matters: these suites create data, so running them an extra time
+    when nothing is wrong would make the second run fail on its own leftovers. The
+    control runs under exactly the conditions the failure did.
+
+    Returns True when the fix introduced no failure of its own and has been put back."""
+    if not st.spec.test_cmd or not originals:
+        return False
+    try:
+        fixed = {path: Path(path).read_text(encoding="utf-8", errors="replace") for path in originals}
+    except OSError:
+        return False
+    module.revert(originals)
+    if st.servers:
+        oracle.restart_servers(st.servers, log=lambda *_a, **_k: None)
     ok, out = oracle.run_tests(st.spec.test_cmd, st.workdir,
                                min(TEST_TIMEOUT_SEC, max(20, st.deadline_ts - time.monotonic() - 30)))
-    st.test_baseline = (ok, _failing_tests(out))
-    if ok is False:
-        log(f"baseline: the project's tests already fail before any change "
-            f"({len(st.test_baseline[1])} failing); environment problems will not trigger a revert")
-    return st.test_baseline
+    if ok is not False:
+        return False  # the original code passes: the failure really is ours
+    introduced = failed_with_fix - _failing_tests(out)
+    if introduced:
+        return False
+    for path, text in fixed.items():
+        try:
+            Path(path).write_text(text, encoding="utf-8")
+        except OSError:
+            return False
+    if st.servers:
+        oracle.restart_servers(st.servers, log=lambda *_a, **_k: None)
+    log(f"the same {len(failed_with_fix)} test(s) fail without our change too "
+        f"(the environment, not the fix); keeping the rewrite")
+    return True
 
 
 def _verify_stage(st: State, label: str, originals: dict, notes: list, module) -> bool:
@@ -507,16 +528,12 @@ def _verify_stage(st: State, label: str, originals: dict, notes: list, module) -
         tok, out = oracle.run_tests(st.spec.test_cmd, st.workdir,
                                     min(TEST_TIMEOUT_SEC, max(20, st.deadline_ts - time.monotonic() - 30)))
         if tok is False:
-            base = st.test_baseline
             now_failing = _failing_tests(out)
-            if base is not None and base[0] is False and now_failing and now_failing <= base[1]:
-                log(f"tests still fail after {label}, but exactly as they did before it "
-                    f"({len(now_failing)} pre-existing failures); keeping the rewrite")
-            else:
-                new_failures = sorted(now_failing - base[1]) if base and base[1] else []
-                detail = (", ".join(new_failures[:3]) if new_failures else out[-300:])
-                log(f"tests fail after {label}; reverting: {detail}")
-                ok = False
+            if now_failing and _control_run(st, module, originals, now_failing):
+                return True
+            log(f"tests fail after {label}; reverting: "
+                + (", ".join(sorted(now_failing)[:3]) if now_failing else out[-300:]))
+            ok = False
         elif tok is None:
             log(f"tests produced no usable result after {label}; keeping the rewrite (it compiles)")
     if not ok:
@@ -1002,10 +1019,6 @@ def run(st: State):
                     log("partial profile seed (hints only): " + ", ".join(f"{k}={v}" for k, v in hints.items()))
     if sp.kind == "code_fix":
         st.snapshot = oracle.snapshot_tree(st.workdir)
-        try:
-            _baseline_tests(st)
-        except Exception as exc:  # noqa: BLE001
-            log(f"baseline test run failed: {exc}")
         try:
             st.servers = oracle.find_servers(st.workdir)
         except Exception as exc:  # noqa: BLE001
