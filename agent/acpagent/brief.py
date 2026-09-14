@@ -92,7 +92,7 @@ PATTERNS = [
      r"""(?i)(?<![\w.])eval\s*\(|(?<![\w.])exec\s*\(|pickle\.loads?\s*\(|cPickle\.loads?|marshal\.loads?|yaml\.load\s*\((?![^)]*SafeLoader)|yaml\.unsafe_load|\bunserialize\s*\(|ObjectInputStream|shelve\.open|jsonpickle\.decode|new Function\s*\(""",
      "critical", None),
     ("File path built from user input (path traversal)", "Path Traversal", "CWE-22",
-     r"""(?i)(?:open|send_file|send_from_directory|FileResponse|readFile|readFileSync|createReadStream|file_get_contents|include|require|fopen|os\.path\.join|Path)\s*\([^\n]*(?:request\.|req\.|params|args|query|form|filename|file_name|path\b|user_input|input\()""",
+     r"""(?i)\b(?:open|send_file|send_from_directory|FileResponse|readFile|readFileSync|createReadStream|file_get_contents|fopen|os\.path\.join|Path)\s*\(""",
      "high", None),
     ("Outbound request to a user-controlled URL (SSRF)", "Server-Side Request Forgery", "CWE-918",
      r"""(?i)(?:requests\.(?:get|post|put|delete|request|head)|urllib\.request\.urlopen|urlopen|httpx\.(?:get|post|request)|aiohttp\.ClientSession|(?<![\w.])fetch|axios\.(?:get|post)|curl_exec|file_get_contents\(\s*\$)\s*\([^\n]*(?:request\.|req\.|params|args|query|form|url\b|target|\burl\s*=)""",
@@ -145,6 +145,46 @@ ROUTE_RE = re.compile(
 )
 
 
+_TAINT_SRC_RE = re.compile(r"request\.|req\.|\.args\b|\.params\b|\.query\b|\.form\b|\.json\b|\binput\s*\(|sys\.argv|\bquery_params\b")
+_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+_HANDLER_DECO_RE = re.compile(r"@\w+\.(?:get|post|put|delete|patch|route)\b|@(?:app|router|bp|blueprint)\b", re.I)
+_CALL_NOISE = {"os", "path", "join", "open", "self", "str", "int", "bytes", "Path", "send_file", "f", "r", "rb", "w",
+               "encoding", "utf", "dirname", "abspath", "realpath", "file", "with", "return", "as"}
+
+
+def _user_tainted(lines, idx: int, line: str) -> bool:
+    """True when an identifier in this call was filled from request data.
+
+    A path built only from constants is not a traversal bug, and reporting it costs a
+    real finding's place in the report and a mechanical fix attempt."""
+    call = line[line.find("("):] if "(" in line else line
+    idents = {i for i in _IDENT_RE.findall(call)} - _CALL_NOISE
+    if not idents:
+        return False
+    start = max(0, idx - 30)
+    for prev in lines[start:idx]:
+        if not _TAINT_SRC_RE.search(prev):
+            continue
+        m = re.match(r"\s*([A-Za-z_]\w*)\s*=", prev)
+        if m and m.group(1) in idents:
+            return True
+    # a request handler's own parameters are user input (FastAPI: def read(filename: str))
+    for j in range(idx, start, -1):
+        m = re.match(r"\s*(?:async\s+)?def\s+\w+\s*\(([^)]*)\)", lines[j - 1])
+        if not m:
+            continue
+        params = {q.split(":")[0].split("=")[0].strip() for q in m.group(1).split(",") if q.strip()}
+        if (idents & params) - {"self"} and _HANDLER_DECO_RE.search("\n".join(lines[max(0, j - 5):j])):
+            return True
+        break
+    return False
+
+
+# a line that confines a path (or the fix we just applied) is not a vulnerability
+_PATH_GUARD_RE = re.compile(r"realpath|abspath|commonpath|commonprefix|is_relative_to|\.resolve\(\)|secure_filename|"
+                            r"os\.path\.basename|safe_join", re.I)
+
+
 def scan_hotspots(root: Path, max_hits: int = 45):
     """Return a list of dicts: file, line, label, category, cwe, severity, code."""
     hits = []
@@ -167,7 +207,15 @@ def scan_hotspots(root: Path, max_hits: int = 45):
             for lab, cat, cwe, rx, sev in _COMPILED:
                 if lab.startswith("SQL") and _BENIGN_SQL_RE.search(line):
                     continue
+                if cat == "Path Traversal" and _PATH_GUARD_RE.search(line):
+                    continue  # this line IS the containment check
                 if rx.search(line):
+                    if cat == "Path Traversal":
+                        _src_lines = text.splitlines()
+                        if not _user_tainted(_src_lines, i - 1, line):
+                            break  # built from constants only
+                        if _PATH_GUARD_RE.search("\n".join(_src_lines[i:i + 5])):
+                            break  # a containment check follows: the path is confined
                     hits.append({"file": rel, "line": i, "label": lab, "category": cat, "cwe": cwe,
                                  "severity": sev, "code": s[:200], "function": _enclosing_def(text, i)})
                     break
