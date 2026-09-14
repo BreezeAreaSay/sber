@@ -333,9 +333,14 @@ def _proc_listen_ports():
     return ports
 
 
-def find_servers(exclude_pids=()):
-    """Snapshot long-running app servers so they can be restarted after edits."""
+_LLM_TOKENS = ("llama", "vllm", "ollama", "sglang", "lmstudio", "text-generation", "tgi", "koboldcpp",
+               "exllama", "mlc_", "openai", "litellm", "harbor", "dockerd", "containerd", "postgres", "redis")
+
+
+def find_servers(workdir=None, exclude_pids=()):
+    """Snapshot the task's own app servers (cwd inside workdir) so they can be restarted after edits."""
     servers = []
+    wd = os.path.abspath(str(workdir)) if workdir else None
     ports = _proc_listen_ports()
     me = os.getpid()
     ancestors = set()
@@ -366,7 +371,9 @@ def find_servers(exclude_pids=()):
         joined = " ".join(argv)
         if not any(tok in joined for tok in _SERVER_TOKENS):
             continue
-        if "tail -f" in joined or "sleep" in argv[0] or "harbor" in joined or "agent.py" in joined:
+        if "tail -f" in joined or "sleep" in argv[0] or "agent.py" in joined:
+            continue
+        if any(tok in joined.lower() for tok in _LLM_TOKENS):
             continue
         if ipid not in ports:
             continue  # only processes that actually listen
@@ -374,6 +381,8 @@ def find_servers(exclude_pids=()):
             cwd = os.readlink(f"/proc/{pid}/cwd")
         except OSError:
             cwd = None
+        if wd and not (cwd and (cwd == wd or cwd.startswith(wd + os.sep)) or (wd + os.sep) in joined or f" {wd}" in joined):
+            continue
         env = {}
         try:
             with open(f"/proc/{pid}/environ", "rb") as fh:
@@ -445,6 +454,18 @@ def restart_servers(servers, log=print, wait=25.0):
             problems.append(f"server `{' '.join(argv)[:100]}` did not come up after your changes "
                             f"(exit={proc.poll()}). Log tail:\n{tail}")
     return problems
+
+
+def server_log_tail(servers, n=1800) -> str:
+    """The last lines the restarted app server(s) wrote — usually the traceback behind a 500."""
+    parts = []
+    for s in servers or ():
+        ports = s.get("ports") or [s.get("pid")]
+        path = f"/tmp/agent-server-{ports[0]}.log"
+        text = read_text(path)
+        if text.strip():
+            parts.append(f"\nServer log tail ({path}):\n{text[-n:]}")
+    return "".join(parts)
 
 
 def run_tests(cmd: str, cwd: Path, timeout: float):

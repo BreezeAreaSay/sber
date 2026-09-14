@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acpagent import brief, forensic_seed, oracle, prompts, tools  # noqa: E402
+from acpagent import brief, forensic_seed, oracle, prompts, sqlfix, tools  # noqa: E402
 from acpagent import spec as specmod  # noqa: E402
 from acpagent.llm import (LLM, BudgetExceeded, ContextTooLong, ToolCall, ToolsUnsupported,  # noqa: E402
                           estimate_tokens, parse_arguments)
@@ -26,7 +26,7 @@ SOFT_DEADLINE_SEC = float(os.environ.get("LOCAL_AGENT_DEADLINE_SEC") or 470)
 HARD_GRACE_SEC = 12
 TOKEN_BUDGET = int(os.environ.get("LOCAL_AGENT_TOKEN_BUDGET") or 220000)
 MAX_ROUNDS = int(os.environ.get("LOCAL_AGENT_MAX_ROUNDS") or 48)
-MAX_CORRECTIONS = 5
+MAX_CORRECTIONS = 8
 HISTORY_CHAR_CAP = int(os.environ.get("LOCAL_AGENT_HISTORY_CHARS") or 70000)
 KEEP_RECENT_ROUNDS = 4
 TEST_TIMEOUT_SEC = 170
@@ -73,6 +73,7 @@ class State:
         self.deliverable_mtime = None
         self.tests_passed = False
         self.critical_nudged = False
+        self.mechanical_notes = []
 
 
 # ---- text protocol recovery ----------------------------------------------------------------
@@ -235,6 +236,9 @@ def user_prompt(st: State) -> str:
     parts = [f"TASK:\n{st.instruction.strip()}"]
     if st.brief.get("text"):
         parts.append(f"CONTEXT GATHERED AUTOMATICALLY (verify before relying on it):\n{st.brief['text']}")
+    if st.mechanical_notes:
+        parts.append("ALREADY FIXED MECHANICALLY (tests pass with these changes; do not redo them):\n"
+                     + "\n".join(f"- {n}" for n in st.mechanical_notes))
     if st.seed:
         parts.append("PRELIMINARY AUTOMATED CORRELATION (may be wrong — verify against the evidence, then write the "
                      "final file yourself):\n" + "\n".join(f"{k}={v}" for k, v in st.seed.items() if not k.startswith("_"))
@@ -313,7 +317,10 @@ def check_code_fix(st: State):
     if st.spec.test_cmd and remaining > 30:
         ok, out = oracle.run_tests(st.spec.test_cmd, st.workdir, min(TEST_TIMEOUT_SEC, max(20, remaining - 15)))
         if ok is False:
-            return False, f"the test command `{st.spec.test_cmd}` fails:\n{tools.truncate(out, 2500)}"
+            why = f"the test command `{st.spec.test_cmd}` fails:\n{tools.truncate(out, 2500)}"
+            if "500" in out or "Internal Server Error" in out or "Connection" in out:
+                why += oracle.server_log_tail(st.servers)
+            return False, why
         if ok is None:
             log("test command produced no usable result; not blocking on it")
         else:
@@ -326,6 +333,49 @@ def check_code_fix(st: State):
             return False, ("tests pass, but these lines still build SQL/shell commands from input — if any of them is "
                            "reachable with user data, fix it too; if they are all false positives reply DONE again:\n" + listing)
     return True, ""
+
+
+# ---- deterministic code fix ---------------------------------------------------------------------
+
+def mechanical_sql_fix(st: State) -> bool:
+    """Parameterize f-string SQL mechanically; keep it only if the project still passes
+    its tests. Returns True when nothing risky is left and the task is finished."""
+    originals, notes = sqlfix.apply(st.workdir)
+    if not originals:
+        return False
+    for n in notes:
+        log(f"sqlfix: {n}")
+    ok = True
+    errs = oracle.compile_errors([Path(p) for p in originals])
+    if errs:
+        log(f"sqlfix produced syntax errors; reverting: {errs[0][:200]}")
+        ok = False
+    if ok and st.servers:
+        problems = oracle.restart_servers(st.servers, log=log)
+        if problems:
+            log(f"server failed after sqlfix; reverting: {problems[0][:200]}")
+            ok = False
+    if ok and st.spec.test_cmd:
+        tok, out = oracle.run_tests(st.spec.test_cmd, st.workdir, min(TEST_TIMEOUT_SEC, max(20, st.deadline_ts - time.monotonic() - 30)))
+        if tok is False:
+            log(f"tests fail after sqlfix; reverting: {out[-300:]}")
+            ok = False
+        elif tok is None:
+            log("tests produced no usable result after sqlfix; keeping the rewrite (it compiles)")
+    if not ok:
+        sqlfix.revert(originals)
+        if st.servers:
+            oracle.restart_servers(st.servers, log=log)
+        return False
+    st.tests_passed = True
+    remaining = [h for h in brief.scan_hotspots(st.workdir)
+                 if h["severity"] in ("critical", "high") and h["category"] not in brief.AUDIT_ONLY_CATEGORIES]
+    if not remaining:
+        log("code_fix solved deterministically: SQL parameterized, tests pass, no risky patterns left (0 tokens)")
+        return True
+    st.mechanical_notes = notes
+    log(f"sqlfix kept; {len(remaining)} risky pattern(s) remain for the model")
+    return False
 
 
 # ---- main loop -----------------------------------------------------------------------------
@@ -586,18 +636,24 @@ def run(st: State):
                 if ok:
                     log("forensic task solved deterministically (0 tokens)")
                     return
-    st.brief = brief.build(sp, st.workdir, log=log)
-    log(f"briefing: {len(st.brief.get('text', ''))} chars, {len(st.brief.get('hotspots') or [])} hotspots, "
-        f"{len(st.brief.get('routes') or [])} routes")
     if sp.kind == "code_fix":
         st.snapshot = oracle.snapshot_tree(st.workdir)
         try:
-            st.servers = oracle.find_servers()
+            st.servers = oracle.find_servers(st.workdir)
         except Exception as exc:  # noqa: BLE001
             st.servers = []
             log(f"server discovery failed: {exc}")
         if st.servers:
             log("running servers: " + "; ".join(f"pid={s['pid']} ports={s['ports']} {' '.join(s['argv'])[:80]}" for s in st.servers))
+        if not os.environ.get("AGENT_DISABLE_SQLFIX"):
+            try:
+                if mechanical_sql_fix(st):
+                    return
+            except Exception as exc:  # noqa: BLE001
+                log(f"mechanical fix failed: {exc}")
+    st.brief = brief.build(sp, st.workdir, log=log)
+    log(f"briefing: {len(st.brief.get('text', ''))} chars, {len(st.brief.get('hotspots') or [])} hotspots, "
+        f"{len(st.brief.get('routes') or [])} routes")
     base_url = os.environ.get("OPENAI_BASE_URL", "")
     model = os.environ.get("LOCAL_AGENT_MODEL") or os.environ.get("OPENAI_MODEL") or ""
     api_key = os.environ.get("OPENAI_API_KEY", "")
