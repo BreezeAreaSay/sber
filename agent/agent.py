@@ -22,7 +22,7 @@ from acpagent.llm import (LLM, BudgetExceeded, ContextTooLong, ToolCall, ToolsUn
 # Published limits are 120s for trivial tasks and 600s for everything else. A run that is
 # not yet solved scores 0 whether it stops voluntarily or gets killed, so the soft deadline
 # is generous but leaves margin for the finaliser and for slower hidden limits.
-SOFT_DEADLINE_SEC = float(os.environ.get("LOCAL_AGENT_DEADLINE_SEC") or 470)
+SOFT_DEADLINE_SEC = float(os.environ.get("LOCAL_AGENT_DEADLINE_SEC") or 520)
 HARD_GRACE_SEC = 12
 TOKEN_BUDGET = int(os.environ.get("LOCAL_AGENT_TOKEN_BUDGET") or 220000)
 MAX_ROUNDS = int(os.environ.get("LOCAL_AGENT_MAX_ROUNDS") or 48)
