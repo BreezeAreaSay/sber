@@ -37,6 +37,8 @@ def detect_driver(text: str, tree_text: str = ""):
         return Driver("%s", True)
     if "sqlite3" in blob or "aiosqlite" in blob:
         return Driver("?", True)
+    if "sqlalchemy" in blob:
+        return Driver("?", True)  # only the text(f"...") form is rewritten (named binds)
     return None
 
 
@@ -346,7 +348,7 @@ def build_query(rhs: str, driver):
                 pieces[j + 1] = ("sql", pieces[j + 1][1][1:])
     if not params or not _SQL_KW.search(sql):
         return None
-    if "{" in sql or "%s" in sql and driver.style != "%s":
+    if "{" in sql or ("%s" in sql and driver.style != "%s"):
         return None
     return sql, params
 
@@ -359,7 +361,7 @@ def _param_index(pieces, j, params):
         if q[0] == "param":
             count += 1
         else:
-            count += len(re.findall(r"\$\d+|\?|%s", q[1]))
+            count += len(re.findall(r"\$\d+|\?|%s|:p\d+", q[1]))
     return count + 1
 
 
@@ -448,6 +450,36 @@ def rewrite_source(src: str, driver):
         replacement = _literal(sql) + ", " + arg_text
         out = out[:m.end()] + replacement + out[close - 1:]
         notes.append(f"inline call parameterized {len(params)} value(s): {args}")
+        changed = True
+        pos = m.end() + len(replacement)
+    # 2b. SQLAlchemy: `<obj>.execute(text(f"..."))` -> text("... :p1 ..."), {"p1": expr}
+    sa_re = re.compile(r"(\b(?:await\s+)?[\w.]+\.(?:execute|exec_driver_sql|scalars?|fetchall)\(\s*text\(\s*)(?=[fFrRuU]?['\"])")
+    pos = 0
+    while True:
+        m = sa_re.search(out, pos)
+        if not m:
+            break
+        text_open = m.end() - 1  # index of '(' of text(
+        text_close = _balanced(out, text_open)
+        if text_close is None:
+            pos = m.end()
+            continue
+        inner = out[m.end():text_close - 1]
+        after = out[text_close:text_close + 2]
+        if not after.lstrip().startswith(")"):
+            pos = m.end()
+            continue
+        named = Driver(":p", False)
+        named.placeholder = lambda n: f":p{n}"
+        res = build_query(inner, named)
+        if res is None:
+            pos = m.end()
+            continue
+        sql, params = res
+        params_dict = "{" + ", ".join(f'"p{i + 1}": {p}' for i, p in enumerate(params)) + "}"
+        replacement = _literal(sql) + "), " + params_dict
+        out = out[:m.end()] + replacement + out[text_close:]
+        notes.append(f"text(f\"...\") parameterized {len(params)} value(s): {', '.join(params)}")
         changed = True
         pos = m.end() + len(replacement)
     # 3. `conditions.append(f"col = '{x}'")` next to a `params` list used with `${len(params)}`
