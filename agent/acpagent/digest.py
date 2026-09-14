@@ -123,7 +123,7 @@ def digest_file(p: Path) -> str:
     return "\n".join(out)
 
 
-def digest_dir(root: Path) -> str:
+def digest_dir(root: Path, max_total: int = TOTAL_CHARS) -> str:
     root = Path(root)
     parts = []
     total = 0
@@ -148,7 +148,7 @@ def digest_dir(root: Path) -> str:
         block = f"## {os.path.relpath(p, root)}\n{d[:PER_FILE_CHARS]}"
         parts.append(block)
         total += len(block)
-        if total > TOTAL_CHARS:
+        if total > max_total:
             break
     return "\n".join(parts)
 

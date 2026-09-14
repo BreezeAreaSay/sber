@@ -79,7 +79,7 @@ class State:
         self.mechanical_notes = []
         self.seen_flags = []  # flag-shaped strings observed in tool outputs (ctf)
         self.call_history = []  # (tool, args) of every executed call, for retry notes
-        self.kv_plausibility_nudged = False
+        self.kv_nudges = 0
         self.retry_note = ""
 
 
@@ -304,14 +304,22 @@ def check_done(st: State, final_text: str):
             return ok, why
         if sp.kind == "kv_report":
             ok, why = oracle.check_kv(sp.deliverable, sp.keys)
-            if ok and not st.kv_plausibility_nudged:
+            if ok and st.kv_nudges < 2:
                 found = oracle.parse_kv_text(oracle.read_text(sp.deliverable), sp.keys)
+                problems = []
                 bad = oracle.kv_plausibility(found, sp.evidence_dir or str(st.workdir))
                 if bad:
-                    st.kv_plausibility_nudged = True
-                    return False, (f"these values do not occur anywhere in the evidence files: {bad}. "
-                                   "They must be copied verbatim from the records; re-check and correct them "
-                                   "(if you are certain they are right, write the file again and reply DONE).")
+                    problems.append(f"these values do not occur anywhere in the evidence files: {bad} "
+                                    "(entity values must be copied verbatim from the records)")
+                try:
+                    problems += oracle.kv_constraints(found, sp.keys, sp.evidence_dir or str(st.workdir), st.instruction)
+                except Exception as exc:  # noqa: BLE001
+                    log(f"constraint check failed: {exc}")
+                if problems:
+                    st.kv_nudges += 1
+                    return False, ("the file is well-formed but some values look wrong:\n- " + "\n- ".join(problems) +
+                                   "\nRe-check them against the evidence and the task's definitions, correct the file "
+                                   "(if you are certain a value is right, write the file again unchanged) and reply DONE.")
             if not ok and final_text:
                 found = oracle.salvage_kv_from_text(final_text, sp.keys)
                 if found and not any(v.lower() in oracle.PLACEHOLDERS for v in found.values()):
@@ -843,6 +851,11 @@ def run(st: State):
     st.llm.discover_model()
     log(f"model={st.llm.model} endpoint={st.llm.url}")
     run_loop(st)
+    if sp.kind == "kv_report":
+        try:
+            vote_kv(st)
+        except Exception as exc:  # noqa: BLE001
+            log(f"voting failed: {exc}")
     # A stalled first attempt on a short-transcript task gets one fresh start with a
     # different framing while there is still meaningful time left.
     if sp.kind in ("ctf", "kv_report", "generic") and st.llm.remaining() > 150 and not st.llm.exhausted(8000):
@@ -853,6 +866,94 @@ def run(st: State):
             st.llm.temperature = 0.5
             log(f"first attempt did not verify ({why[:120]}); retrying with a fresh transcript")
             run_loop(st)
+
+
+def _kv_answer(st: State):
+    sp = st.spec
+    ok, _ = oracle.check_kv(sp.deliverable, sp.keys)
+    if not ok:
+        return None
+    return oracle.parse_kv_text(oracle.read_text(sp.deliverable), sp.keys)
+
+
+def _kv_score(st: State, values: dict) -> int:
+    """Number of constraint/plausibility violations (lower is better)."""
+    sp = st.spec
+    n = 0
+    try:
+        if oracle.kv_plausibility(values, sp.evidence_dir or str(st.workdir)):
+            n += 1
+        n += len(oracle.kv_constraints(values, sp.keys, sp.evidence_dir or str(st.workdir), st.instruction))
+    except Exception:  # noqa: BLE001
+        pass
+    return n
+
+
+def vote_kv(st: State):
+    """Independent re-analyses of a key=value task, combined per key by majority.
+
+    A weak model's errors on a forensics question are usually specific to one reading of
+    the statement; a second pass forced through a different method (one script that
+    applies the definitions literally, with reasoning enabled when the server supports
+    it) disagrees exactly on the keys that were wrong. Two matching answers stop early."""
+    sp = st.spec
+    llm = st.llm
+    first = _kv_answer(st)
+    if first is None or llm.remaining() < 240 or llm.exhausted(12000):
+        return
+    if os.environ.get("LOCAL_AGENT_NO_VOTE"):
+        return
+    attempts = [first]
+    strategies = [
+        (prompts.FORENSICS_SECOND_PASS, True, 0.2),
+        ("Independent re-analysis with a checklist: for EACH key write 'key -> the task's defining words -> the exact "
+         "log line -> value' in your reply, using the deterministic profiles in the context, then write the file.",
+         False, 0.4),
+    ]
+    for note, think, temp in strategies:
+        if llm.remaining() < 240 or llm.exhausted(12000):
+            break
+        st.retry_note = note
+        saved_extra = dict(llm.extra)
+        if think and llm.extra:
+            llm.extra = {"chat_template_kwargs": {"enable_thinking": True}}
+        llm.temperature = temp
+        st.kv_nudges = 0
+        log(f"kv vote: independent attempt {len(attempts) + 1} (thinking={'on' if think and llm.extra else 'off'})")
+        try:
+            run_loop(st)
+        finally:
+            llm.extra = saved_extra
+        ans = _kv_answer(st)
+        if ans is None:
+            log("kv vote: attempt produced no valid answer")
+            continue
+        attempts.append(ans)
+        if all(a == attempts[0] for a in attempts):
+            log("kv vote: answers agree")
+            break
+        if len(attempts) >= 3:
+            break
+    final = {}
+    for k in sp.keys:
+        vals = [a.get(k, "").strip() for a in attempts if a.get(k, "").strip()]
+        counts = {}
+        for v in vals:
+            counts[v] = counts.get(v, 0) + 1
+        best = max(counts.items(), key=lambda kv: kv[1]) if counts else ("", 0)
+        if best[1] >= 2 or len(counts) == 1:
+            final[k] = best[0]
+        else:
+            # no majority: prefer the value that violates no rule, then the first attempt's
+            ranked = sorted(counts.keys(), key=lambda v: (_kv_score(st, {k: v}), vals.index(v)))
+            final[k] = ranked[0]
+    if final != attempts[0]:
+        log("kv vote: per-key result differs from the first attempt: " +
+            ", ".join(f"{k}: {attempts[0].get(k)} -> {final[k]}" for k in sp.keys if attempts[0].get(k) != final[k]))
+    else:
+        log("kv vote: keeping the first attempt's answer")
+    oracle.write_kv(sp.deliverable, final, sp.keys)
+    st.final_text = st.final_text or "DONE"
 
 
 def main(argv) -> int:

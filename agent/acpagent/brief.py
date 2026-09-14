@@ -21,7 +21,7 @@ SOURCE_EXT = {".py", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".php", ".rb", ".go",
               ".env", ".conf", ".json", ".xml", ".properties", ".lua"}
 MAX_FILE_BYTES = 600_000
 MAX_FILES = 600
-MAX_BRIEF_CHARS = 16000
+MAX_BRIEF_CHARS = 22000
 
 
 def iter_files(root: Path, limit: int = MAX_FILES):
@@ -255,6 +255,50 @@ def data_heads(root: Path, max_files: int = 40, head_lines: int = 4, line_chars:
     return "\n".join(out)
 
 
+def program_outputs(root: Path, max_programs: int = 8, timeout: int = 6):
+    """Run the challenge's own programs (ELF binaries, python/shell scripts) with no
+    arguments and with --help, capturing what they print. Yields (label, bytes)."""
+    results = []
+    count = 0
+    for p in iter_files(Path(root), limit=200):
+        if count >= max_programs:
+            break
+        try:
+            size = p.stat().st_size
+            if size > 5_000_000 or size == 0:
+                continue
+            with p.open("rb") as fh:
+                head = fh.read(64)
+        except OSError:
+            continue
+        rel = os.path.relpath(p, root)
+        if head.startswith(b"\x7fELF"):
+            cmds = [[str(p)], [str(p), "--help"]]
+            try:
+                os.chmod(p, 0o755)
+            except OSError:
+                pass
+        elif p.suffix == ".py" or head.startswith(b"#!") and b"python" in head:
+            cmds = [["python3", str(p)], ["python3", str(p), "--help"]]
+        elif p.suffix == ".sh" or head.startswith(b"#!") and (b"sh" in head or b"bash" in head):
+            cmds = [["bash", str(p)]]
+        else:
+            continue
+        count += 1
+        for argv in cmds:
+            try:
+                r = subprocess.run(argv, cwd=str(p.parent), stdin=subprocess.DEVNULL, capture_output=True,
+                                   timeout=timeout, env={**os.environ, "TERM": "dumb"})
+                out = (r.stdout or b"") + (b"\n[stderr] " + r.stderr if r.stderr else b"")
+            except subprocess.TimeoutExpired as exc:
+                out = (exc.stdout or b"") + b"\n[timed out]"
+            except Exception:  # noqa: BLE001
+                continue
+            if out.strip():
+                results.append((f"{rel} {' '.join(argv[1:]) if len(argv) > 1 and argv[0] not in ('python3', 'bash') else ' '.join(argv[2:])}".strip(), out[:6000]))
+    return results
+
+
 def binary_strings(root: Path, max_files: int = 12) -> str:
     """Interesting printable strings from binaries and captures, for the CTF briefing."""
     out = []
@@ -361,6 +405,21 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
             except Exception:  # noqa: BLE001
                 continue
             consider(dec, f"{rel} (base64)")
+            # second layer: base64-of-base64 / base64-of-hex are common CTF wrappers
+            for m2 in _B64_RE.finditer(dec[:50000]):
+                try:
+                    consider(base64.b64decode(m2.group(0) + b"=" * (-len(m2.group(0)) % 4), validate=False), f"{rel} (base64 x2)")
+                except Exception:  # noqa: BLE001
+                    pass
+            for m2 in _HEX_RE.finditer(dec[:50000]):
+                try:
+                    consider(bytes.fromhex(m2.group(0).decode()), f"{rel} (base64 then hex)")
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                consider(codecs.encode(dec.decode("latin-1"), "rot13").encode("latin-1"), f"{rel} (base64 then rot13)")
+            except Exception:  # noqa: BLE001
+                pass
         for m in _HEX_RE.finditer(data):
             chunk = m.group(0)
             if len(chunk) > 20000:
@@ -384,6 +443,32 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
                     consider(x, f"{rel} (xor 0x{k:02x})")
         if len(found) > 20:
             break
+    # what the challenge programs print (usage text, prompts, sometimes the flag itself)
+    try:
+        for src, out_bytes in program_outputs(Path(root)):
+            consider(out_bytes, f"{src} (program output)")
+    except Exception:  # noqa: BLE001
+        pass
+    # Caesar/ROT-N on text files: the classic "encrypted" note
+    try:
+        for p in iter_files(Path(root), limit=max_files):
+            try:
+                if p.stat().st_size > 200_000:
+                    continue
+                data = p.read_bytes()
+            except OSError:
+                continue
+            if b"\x00" in data[:4096]:
+                continue
+            rel = os.path.relpath(p, root)
+            for shift in range(1, 26):
+                if shift == 13:
+                    continue
+                rotated = bytes((b - 65 + shift) % 26 + 65 if 65 <= b <= 90 else ((b - 97 + shift) % 26 + 97 if 97 <= b <= 122 else b) for b in data)
+                if b"{" in rotated:
+                    consider(rotated, f"{rel} (caesar +{shift})")
+    except Exception:  # noqa: BLE001
+        pass
     # keys/passwords hidden in source: string constants (and joined list literals)
     try:
         cands = _string_constants(Path(root))
@@ -574,9 +659,13 @@ def build(spec, workdir: Path, log=print) -> dict:
             if heads:
                 sections.append(f"Files under {root} (size, line count, first lines):\n{heads}")
         if kind in ("kv_report", "generic"):
-            from acpagent import digest
+            from acpagent import digest, profile
             root = Path(spec.evidence_dir) if spec.evidence_dir else workdir
-            dg = digest.digest_dir(root)
+            prof = profile.profile_dir(root)
+            if prof:
+                sections.append("DETERMINISTIC PROFILES (computed by code from the whole files — counts, first/last "
+                                "events and the '→ UTC' conversions are exact; prefer these over your own counting):\n" + prof)
+            dg = digest.digest_dir(root, max_total=4500)
             if dg:
                 sections.append("Pre-computed facts per file (counts are over the whole file; verify the rare "
                                 "events — they are usually the interesting ones):\n" + dg)
@@ -587,6 +676,12 @@ def build(spec, workdir: Path, log=print) -> dict:
             bs = binary_strings(Path(spec.evidence_dir) if spec.evidence_dir else workdir)
             if bs:
                 sections.append("Binary files / captures (strings of interest):\n" + bs[:5000])
+            outs = program_outputs(Path(spec.evidence_dir) if spec.evidence_dir else workdir)
+            if outs:
+                shown = []
+                for label, data in outs[:8]:
+                    shown.append(f"$ {label}\n{data.decode('utf-8', 'replace')[:700]}")
+                sections.append("Output of the challenge's own programs (run with no arguments / --help):\n" + "\n".join(shown)[:5000])
             cands = flag_candidates(workdir, spec.flag_prefix)
             info["flags"] = cands
             if cands:

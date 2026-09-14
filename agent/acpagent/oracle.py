@@ -432,6 +432,50 @@ def kv_plausibility(values: dict, evidence_dir) -> str:
     return ", ".join(bad)
 
 
+_ISO_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
+_IPV4_FULL = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+_IPV6_FULL = re.compile(r"^[0-9a-fA-F:]{3,39}$")
+
+
+def kv_constraints(values: dict, keys, evidence_dir, instruction: str):
+    """Format/derivation rules a value must satisfy, from the key name and the statement.
+    Returns a list of human-readable violations (empty when everything checks out)."""
+    from acpagent import profile
+    problems = []
+    instr = instruction or ""
+    cands = None
+    for k in keys:
+        v = str(values.get(k, "")).strip()
+        lk = k.lower()
+        parts = lk.split("_")
+        clause = ""
+        m = re.search(rf"`{re.escape(k)}`([^\n]{{0,240}})", instr)
+        if m:
+            clause = m.group(1).lower()
+        wants_utc = "utc" in parts or " utc" in clause or "iso 8601" in clause or "iso-8601" in clause
+        if wants_utc:
+            if not _ISO_UTC_RE.match(v):
+                problems.append(f"{k}={v}: must be an ISO-8601 UTC timestamp ending in Z, e.g. 2026-05-01T14:03:44Z "
+                                "(keep the source's fractional seconds if the task says verbatim)")
+                continue
+            if evidence_dir and Path(evidence_dir).is_dir():
+                if cands is None:
+                    try:
+                        cands = profile.utc_candidates(Path(evidence_dir))
+                    except Exception:  # noqa: BLE001
+                        cands = set()
+                if cands and v not in cands and (v.split(".")[0] + "Z") not in cands:
+                    problems.append(f"{k}={v}: this is not the UTC conversion of any timestamp in the evidence — "
+                                    "the file's time zone was probably ignored; use the '→ UTC' value shown in the context")
+        elif any(t in parts for t in ("count", "attempts", "attempt", "number", "num", "total", "bytes", "size", "n", "requests", "events", "lines")) or lk.startswith("n_"):
+            if not re.fullmatch(r"-?\d+", v):
+                problems.append(f"{k}={v}: must be a plain integer (digits only)")
+        elif "ip" in parts or lk.endswith("ip") or "addr" in lk or "address" in lk:
+            if not (_IPV4_FULL.match(v) or (":" in v and _IPV6_FULL.match(v))):
+                problems.append(f"{k}={v}: must be a bare IP address")
+    return problems
+
+
 def write_kv(path, values: dict, keys):
     write_text(path, "\n".join(f"{k}={values.get(k, 'unknown')}" for k in keys))
 

@@ -40,13 +40,20 @@ When all tests pass and every vulnerability is fixed, reply DONE.
 
 FORENSICS = """
 TASK TYPE: log forensics / incident analysis. The answer must be derived from the evidence files, copied exactly.
-Method:
-- First understand every file: head/wc/grep. Note timezones (log files may use different ones), truncated files with recovered fragments (combine them), multi-line records (continuation lines starting with whitespace belong to the previous line), duplicated or decoy records.
-- Write a python3 script (python3 - <<'EOF' ... EOF) that parses the files, applies the task's rules literally (event types, time windows, confirmations across files, tie-breaks), and prints the candidate records with all their fields. Read the output and decide.
-- Copy values VERBATIM from the source record: timestamps keep their exact format and fractional seconds; byte counts digit for digit; an IP "derived from the proxy log using XFF" means the client address in the X-Forwarded-For chain (the last non-private hop, unless the task says otherwise), never the proxy's own address.
+The context already contains DETERMINISTIC PROFILES computed by code: per-IP/per-account tables (failed vs accepted logins, first success, 'failed before first success'), rare events printed in full, and every timestamp converted to UTC ('→ UTC ...'). They are exact — use them instead of counting yourself.
+Method (do it key by key, in this order):
+1. For each required key, quote the exact words of the task that define it (e.g. "taken from the `Accepted password` line" means Accepted PASSWORD, not publickey; "before the first successful login" means only the lines preceding that login).
+2. Find the row/line in the profiles that matches that definition. Confirm it with ONE bash command (grep -n / a short python3 heredoc) only if the profiles are ambiguous.
+3. Take the value: entity values (IP, account, request id) verbatim from the log line; timestamps in the form the task demands — when it asks for UTC use the '→ UTC' value (already converted from the file's time zone, same fractional digits); counts as plain integers.
+Rules: timezones differ per file (read the header comments); truncated files continue in recovered fragments — combine them; continuation lines starting with whitespace belong to the previous record; decoy records exist (a later or earlier similar event) — apply the task's tie-break literally; an IP "derived from the proxy log using XFF" is the client address in the X-Forwarded-For chain (the last non-private hop unless the task says otherwise), never the proxy's own address.
 {format_block}
-Write the deliverable with write_file exactly in that format, then reply DONE.
+Before writing, list for yourself: key -> defining words -> source line -> value. Then write the deliverable with write_file exactly in that format and reply DONE.
 """
+
+FORENSICS_SECOND_PASS = ("Independent re-analysis: do not rely on any earlier conclusion. Write ONE python3 script "
+                         "(python3 - <<'EOF' ... EOF) that computes every required value from the evidence files "
+                         "following the task's definitions literally (event wording, before/after ordering, time "
+                         "zone conversion, tie-breaks), print the values with the supporting log lines, then write the file.")
 
 KV_FORMAT = """Deliverable: {path} — UTF-8 text with exactly {n} non-empty lines, one key=value per line, no spaces around '=', no blank lines, no comments, no extra keys. The keys, in this order:
 {keys}
