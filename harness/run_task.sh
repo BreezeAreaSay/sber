@@ -39,6 +39,7 @@ START=$(date +%s)
 timeout --signal=KILL "$AGENT_TIMEOUT" docker exec -w /opt/harbor/local-agent \
   -e LOCAL_AGENT_MODEL="$MODEL_NAME" -e OPENAI_BASE_URL="$MODEL_URL" -e OPENAI_API_KEY=local \
   -e LOCAL_AGENT_WORKDIR=/opt/harbor/local-agent -e LOCAL_AGENT_DEADLINE_SEC="$LOCAL_DEADLINE" -e LOCAL_AGENT_IDLE_TIMEOUT="${LOCAL_IDLE:-900}" \
+  -e LOCAL_AGENT_FORCE_TEXT_TOOLS="${FORCE_TEXT:-}" -e AGENT_DISABLE_SQLFIX="${NO_SQLFIX:-}" \
   "$C" sh -c './run.sh "$0" 2>&1' "$INSTR" > "$OUT/agent.log" 2>&1
 RC=$?
 END=$(date +%s)

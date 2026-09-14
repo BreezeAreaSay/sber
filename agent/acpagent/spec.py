@@ -14,7 +14,8 @@ _ABS_PATH_RE = re.compile(r"(?<![\w./-])(/(?:[\w.+-]+/)*[\w.+-]+)")
 _BACKTICK_REL_RE = re.compile(r"`([\w][\w./+-]*\.[A-Za-z0-9]{1,6})`")
 _WRITE_VERB_RE = re.compile(
     r"\b(writ\w*|sav\w*|creat\w*|record\w*|stor\w*|plac\w*|put|output\w*|emit\w*|report|"
-    r"deliverable|produc\w*|generat\w*|export\w*|dump\w*|submit\w*|answer|result)\b",
+    r"deliverable|produc\w*|generat\w*|export\w*|dump\w*|submit\w*|answer|result)\b|"
+    r"запи\w*|сохран\w*|созда\w*|помест\w*|вывед\w*|выгруз\w*|сформир\w*|отч[её]т\w*|ответ\w*|результат\w*|файл\w*",
     re.I,
 )
 _VERB_WINDOW = 110
@@ -26,13 +27,16 @@ _EXACT_CONTENT_RES = (
     re.compile(r"whose (?:entire )?content(?:s)? (?:is|are) exactly `([^`\n]+)`", re.I),
     re.compile(r"with (?:the )?(?:exact )?content `([^`\n]+)`", re.I),
     re.compile(r"containing (?:only |just )?(?:the (?:single )?(?:word|string|text|line) )?`([^`\n]+)`", re.I),
+    re.compile(r"(?:содержим\w+|содержан\w+|текст\w*)[^`\n]{0,60}?(?:ровно|точно|в точности|только)[^`\n]{0,30}?`([^`\n]+)`", re.I),
+    re.compile(r"(?:ровно|точно|в точности)\s+(?:одно слово |слово |строк[ау] |текст )?`([^`\n]+)`", re.I),
 )
 
 _KEY_BULLET_RE = re.compile(r"^\s*[-*]\s*`?([a-z][a-z0-9_]{1,40})`?\s*(?:[:—-].*)?$", re.M)
 _KEY_INLINE_RE = re.compile(r"`([a-z][a-z0-9_]{1,40})`\s*=")
 _KV_SHAPE_RE = re.compile(
     r"key\s*=\s*value|`[a-z_][a-z0-9_]*`\s*=|one .{0,20}per line|per line|the following keys|these keys|"
-    r"with (?:the )?(?:keys|fields)|\bkeys\s*:|(?:exactly )?(?:\d+|two|three|four|five|six|seven|eight)\s+(?:non-empty\s+)?lines",
+    r"with (?:the )?(?:keys|fields)|\bkeys\s*:|(?:exactly )?(?:\d+|two|three|four|five|six|seven|eight)\s+(?:non-empty\s+)?lines|"
+    r"ключ\s*=\s*значение|(?:по одной|одна|одну) (?:пар[аеуы]|строк[аеиу]) на строк|(?:ровно|точно) (?:\d+|две|три|четыре|пять|шесть) (?:непуст\w+ )?строк|следующие ключи|эти ключи|ключ[аи]?:",
     re.I,
 )
 _KEY_STOPWORDS = frozenset({
@@ -43,7 +47,7 @@ _KEY_STOPWORDS = frozenset({
 })
 
 _CTF_STRONG_RE = re.compile(
-    r"\bctf\b|capture[- ]the[- ]flag|\bflag\b.{0,40}\{|\{[^{}\s]{2,60}\}.{0,40}\bflag\b|"
+    r"\bctf\b|capture[- ]the[- ]flag|\bflag\b.{0,40}\{|\{[^{}\s]{2,60}\}.{0,40}\bflag\b|флаг\w*|"
     r"(?:recover|retrieve|reveal|extract|obtain|print|find|read|get|decode|decrypt|capture|submit|write)\s+(?:the\s+|a\s+)?flag\b|"
     r"the flag is|flag\.txt|\bflag format\b|\bthe flag\b",
     re.I,
@@ -51,28 +55,33 @@ _CTF_STRONG_RE = re.compile(
 _FORENSICS_RE = re.compile(
     r"forensic|incident|exfil|\bIR-\d|correlat|attribut|log analysis|triage the logs|"
     r"compromis\w+ (?:user|account|host)|attacker|\bpcap\b|memory dump|timeline|malware|"
-    r"\bsiem\b|\bsoc\b|analyst",
+    r"\bsiem\b|\bsoc\b|analyst|форензик\w*|инцидент\w*|расследован\w*|злоумышленник\w*|атакующ\w*|"
+    r"скомпрометирован\w*|утечк\w*|эксфильтрац\w*|журнал\w*|\bлог[иа]?\b|логов\b|логах\b",
     re.I,
 )
 _REPORT_RE = re.compile(
     r"security[_ ]report|\bfindings\b|bug bounty|security audit|audit report|report the vulnerab|"
-    r"machine-readable|json report|vulnerability report|pentest report|assessment report",
+    r"machine-readable|json report|vulnerability report|pentest report|assessment report|"
+    r"отч[её]т\w* (?:о|об|по) (?:уязвим|безопас|аудит)|аудит\w* безопасност\w*|bug ?bounty|найденн\w+ уязвим\w*|json-отч[её]т",
     re.I,
 )
 _FIX_RE = re.compile(
     r"\b(?:fix|fixes|fixed|fixing|patch|patches|patched|patching|remediat\w+|harden\w*|"
-    r"secure|secures|secured|securing|repair\w*|mitigat\w+|resolve\w*|eliminate\w*|close the)\b",
+    r"secure|secures|secured|securing|repair\w*|mitigat\w+|resolve\w*|eliminate\w*|close the)\b|"
+    r"исправ\w*|почин\w*|устран\w*|закр\w+ уязвим\w*|пропатч\w*|защити\w*",
     re.I,
 )
 _NO_MODIFY_RE = re.compile(
-    r"do not (?:modify|change|edit|alter|touch)|don't (?:modify|change|edit)|without (?:modifying|changing)|must not (?:modify|change)|read-only",
+    r"do not (?:modify|change|edit|alter|touch)|don't (?:modify|change|edit)|without (?:modifying|changing)|must not (?:modify|change)|read-only|"
+    r"не (?:изменя\w*|модифицир\w*|редактир\w*|прав\w*|меня\w*) (?:код|исходн\w*|файл\w*|приложен\w*)",
     re.I,
 )
 _CODE_RE = re.compile(
     r"\bpytest\b|\btests?/|\btest suite\b|source code|codebase|application|endpoint|module|repository|"
     r"vulnerab\w+|security (?:issue|defect|bug|flaw)|pyproject|package\.json|requirements\.txt|"
     r"\.(?:py|js|ts|jsx|tsx|go|php|rb|java|cs|rs|c|cc|cpp|h)\b|\bcode\b|function|route|handler|"
-    r"controller|middleware|service|login|authentication|\bauth\b|\bquery\b|injection",
+    r"controller|middleware|service|login|authentication|\bauth\b|\bquery\b|injection|"
+    r"уязвим\w*|\bкод\w*|приложен\w*|тест\w*|инъекц\w*|функци\w*|обработчик\w*|эндпоинт\w*",
     re.I,
 )
 _TEST_CMD_RE = re.compile(

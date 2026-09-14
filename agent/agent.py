@@ -422,6 +422,8 @@ def run_loop(st: State):
     edit_counts = {}
     sig_counts = {}      # (call, result) signature -> occurrences anywhere in the run
     error_streak = 0     # consecutive tool results that were errors
+    no_call_rounds = 0   # rounds without any tool call while tools were advertised
+    ever_called = False
     while rounds < MAX_ROUNDS:
         if llm.exhausted():
             log("budget exhausted; leaving the loop")
@@ -461,6 +463,20 @@ def run_loop(st: State):
             if calls:
                 log(f"recovered {len(calls)} tool call(s) from text")
         log(f"round {rounds}: {len(calls)} call(s), {len(text)} chars, finish={res.finish}, tokens={llm.tokens_used}")
+        if calls:
+            ever_called = True
+        elif not text_mode and not ever_called:
+            no_call_rounds += 1
+            if no_call_rounds >= 2:
+                # The server accepted the tool schemas but the model never calls them:
+                # most likely they were silently ignored. Switch to the text protocol.
+                text_mode = True
+                llm.supports_tools = False
+                messages[0] = {"role": "system", "content": system_prompt(st, True)}
+                log("no tool calls in two rounds; switching to the text protocol")
+                messages.append({"role": "assistant", "content": text or "(no reply)"})
+                messages.append({"role": "user", "content": "Use the tool call format described in the system prompt to inspect files and act."})
+                continue
         if not calls:
             if text:
                 final_text = text

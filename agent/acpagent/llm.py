@@ -94,7 +94,9 @@ class LLM:
         self.completion_tokens = 0
         self.calls = 0
         self.failures = 0
-        self.supports_tools = True
+        self.supports_tools = os.environ.get("LOCAL_AGENT_FORCE_TEXT_TOOLS", "") == ""
+        self.use_tool_choice = True
+        self.max_tokens_field = "max_tokens"
         # Thinking off by default: on a small model it multiplies latency and tokens
         # without a matching gain on tool-driven work. Dropped if the server objects.
         self.extra = {"chat_template_kwargs": {"enable_thinking": False}}
@@ -161,12 +163,13 @@ class LLM:
             "model": self.model or "default",
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            self.max_tokens_field: max_tokens,
             "stream": False,
         }
         if tools and self.supports_tools:
             body["tools"] = tools
-            body["tool_choice"] = "auto"
+            if self.use_tool_choice:
+                body["tool_choice"] = "auto"
         body.update(self.extra)
         return body
 
@@ -216,6 +219,14 @@ class LLM:
                     if self.extra and any(s in low for s in _UNKNOWN_FIELD_SIGNS):
                         self.log("[llm] endpoint rejects extra fields; retrying without them")
                         self.extra = {}
+                        continue
+                    if tools and self.supports_tools and self.use_tool_choice and "tool_choice" in low:
+                        self.log("[llm] endpoint rejects tool_choice; retrying without it")
+                        self.use_tool_choice = False
+                        continue
+                    if self.max_tokens_field == "max_tokens" and "max_completion_tokens" in low:
+                        self.log("[llm] endpoint wants max_completion_tokens; retrying")
+                        self.max_tokens_field = "max_completion_tokens"
                         continue
                     if tools and self.supports_tools and any(s in low for s in _NO_TOOLS_SIGNS):
                         self.log("[llm] endpoint rejects tools; switching to text protocol")
@@ -283,6 +294,15 @@ class LLM:
             text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
         text = text or ""
         reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
+        # Thinking models served without a reasoning parser put their chain of thought
+        # inside <think>...</think> in the content; it is not the answer.
+        if "<think>" in text or "</think>" in text:
+            stripped = _THINK_RE.sub("", text)
+            if "<think>" in text and "</think>" not in text:
+                # cut off mid-thought: nothing after the tag is an answer either
+                stripped = text.split("<think>", 1)[0]
+            reasoning = reasoning or text
+            text = stripped.strip()
         finish = choice.get("finish_reason") or ""
         usage = data.get("usage") or {}
         ui = int(usage.get("prompt_tokens") or 0)
@@ -424,6 +444,7 @@ def estimate_tokens(text) -> int:
 
 
 _TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
+_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.S)
 
 
 def parse_arguments(raw):
