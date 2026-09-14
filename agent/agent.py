@@ -942,6 +942,18 @@ def run(st: State):
                 log(f"draft report written: {notes['n']} findings ({notes['scan']} from the code scan, "
                     f"{notes['heuristic']} from the route map)"
                     + ("; own audit flags: " + "; ".join(st.report_gaps) if st.report_gaps else "; own audit: complete"))
+                # When the scan proved real vulnerabilities (not just route-map guesses) and
+                # the report passes its own audit, it is already the finished deliverable.
+                # Letting a weak model rewrite several thousand tokens of JSON only risks a
+                # truncated file and can exhaust the task's time budget.
+                proven = [h for h in (st.brief.get("hotspots") or []) if h.get("severity") in ("critical", "high")]
+                okj, whyj = oracle.check_json_report(sp.deliverable, sp.json_root, sp.json_fields)
+                if proven and not st.report_gaps and okj and not os.environ.get("LOCAL_AGENT_ALWAYS_MODEL"):
+                    log(f"report solved deterministically: {len(proven)} proven finding(s) from the code, "
+                        "report complete and well-formed (0 tokens)")
+                    return
+                if not okj:
+                    log(f"draft report did not validate ({whyj[:120]}); the model will rebuild it")
         except Exception as exc:  # noqa: BLE001
             log(f"draft report failed: {exc}")
     if sp.kind == "ctf" and sp.deliverable and not os.environ.get("LOCAL_AGENT_ALWAYS_MODEL"):
