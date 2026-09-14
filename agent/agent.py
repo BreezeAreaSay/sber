@@ -200,6 +200,11 @@ def system_prompt(st: State, text_protocol: bool) -> str:
     base = prompts.BASE.format(workdir=st.workdir)
     if sp.kind == "json_report":
         block = prompts.VULN_REPORT.format(path=sp.deliverable, shape=prompts.report_shape(sp.json_root, sp.json_fields))
+        if sp.also_fix:
+            block = block.replace("Do NOT modify application code.",
+                                  "The task ALSO asks you to fix the issues: after writing the report, edit the "
+                                  "vulnerable code with str_replace (parameterized queries, no shell=True, path "
+                                  "checks) without changing normal behaviour, and run the project's tests if any.")
     elif sp.kind == "code_fix":
         hint = f" (`{sp.test_cmd}`)" if sp.test_cmd else ""
         block = prompts.CODE_FIX.format(test_hint=hint)
@@ -424,9 +429,11 @@ def run_loop(st: State):
         per_call_cap = max(1800, min(tools.MAX_TOOL_OUTPUT_CHARS, 24000 // max(1, len(calls))))
         for c in calls:
             if st.spec.no_modify and c.name in ("write_file", "str_replace"):
-                target = str(c.arguments.get("path", ""))
-                if sp.deliverable and os.path.abspath(str(tools.resolve(target, st.workdir))) != os.path.abspath(sp.deliverable):
-                    result = f"[error] this task forbids modifying application files; only the deliverable {sp.deliverable} may be written"
+                target = os.path.abspath(str(tools.resolve(str(c.arguments.get("path", "")), st.workdir)))
+                inside = target.startswith(os.path.abspath(str(st.workdir)) + os.sep)
+                if inside and (not sp.deliverable or target != os.path.abspath(sp.deliverable)):
+                    result = (f"[error] this task forbids modifying application files; write only the deliverable "
+                              f"{sp.deliverable or ''} (helper scripts can go under /tmp)")
                 else:
                     result = tools.dispatch(c.name, c.arguments, st.workdir)
             else:
