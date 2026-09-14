@@ -704,10 +704,14 @@ def run(st: State):
             all_ok = all_ok and ok
         if all_ok:
             return
-    if sp.kind == "kv_report" and set(sp.keys) == forensic_seed.EXPECTED_KEYS:
+    low_instr = st.instruction.lower()
+    family = set(sp.keys) == forensic_seed.EXPECTED_KEYS or (
+        sp.kind == "kv_report" and ("xff" in low_instr or "x-forwarded" in low_instr) and
+        any(w in low_instr for w in ("exfil", "export", "jsonl", "audit")))
+    if sp.kind == "kv_report" and family:
         root = sp.evidence_dir or str(st.workdir)
         try:
-            seed = forensic_seed.solve(root)
+            seed = forensic_seed.solve(root, sp.keys, st.instruction)
         except Exception as exc:  # noqa: BLE001
             seed = None
             log(f"forensic seed failed: {exc}")
@@ -719,7 +723,9 @@ def run(st: State):
             # mirrors; when it does, the correlation is deterministic and the model would
             # only re-verify it at several thousand tokens per round.
             low = st.instruction.lower()
-            if all(sig in low for sig in ("payload_logical_bytes", "identity.subject", "xff")) and \
+            mapped = forensic_seed.key_mapping(st.instruction, sp.keys)
+            if (all(sig in low for sig in ("payload_logical_bytes", "identity.subject", "xff"))
+                    or (len(mapped) >= max(2, len(sp.keys) - 2) and "xff" in low)) and \
                     not os.environ.get("LOCAL_AGENT_ALWAYS_MODEL"):
                 ok, why = oracle.check_kv(sp.deliverable, sp.keys)
                 if ok:

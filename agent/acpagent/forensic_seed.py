@@ -12,6 +12,33 @@ from datetime import datetime
 from pathlib import Path
 
 EXPECTED_KEYS = {"attacker_ip", "compromised_user", "exfil_bytes", "first_malicious_event_utc"}
+_EVENT_HINTS = ("sensitive_export", "exfil", "export", "download", "transfer", "leak", "dump", "bulk")
+_MAPPING_RE = re.compile(r"`([a-z][a-z0-9_]*)`\s*=\s*([^\n]*)")
+_PATH_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+|ts|timestamp|time)`")
+
+
+def key_mapping(instruction: str, keys):
+    """key -> list of record field paths named in the statement's normative mapping."""
+    mapping = {}
+    for m in _MAPPING_RE.finditer(instruction or ""):
+        key = m.group(1)
+        if key not in keys:
+            continue
+        clause = m.group(2)
+        paths = [p for p in _PATH_RE.findall(clause) if p != key]
+        if paths:
+            mapping[key] = paths
+    return mapping
+
+
+def _lookup(row, path):
+    cur = row
+    for part in path.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return None
+    return cur
 
 _RID_RE = re.compile(r"\brequest_id\s*=\s*([^\s]+)")
 _DECISION_RE = re.compile(r"\bdecision\s*=\s*([^\s\"']+)")
@@ -107,8 +134,11 @@ def _public_client(xff: str):
     return None
 
 
-def solve(evidence_dir) -> dict:
-    """Return the four fields plus `_detail` for the briefing, or None."""
+def solve(evidence_dir, keys=None, instruction="") -> dict:
+    """Return the report fields plus `_detail` for the briefing, or None.
+
+    With `keys`/`instruction`, values follow the statement's own `key` = `field.path`
+    mapping; without them the public task's four fields are produced."""
     root = Path(evidence_dir)
     if not root.is_dir():
         return None
@@ -120,7 +150,8 @@ def solve(evidence_dir) -> dict:
         audit, http, ident = row.get("audit"), row.get("http"), row.get("identity")
         if not all(isinstance(x, dict) for x in (audit, http, ident)):
             continue
-        if str(audit.get("event", "")).lower() != "sensitive_export":
+        ev = str(audit.get("event", "")).lower()
+        if not any(h in ev for h in _EVENT_HINTS) or ev.endswith(("preview", "_attempt", "_denied")):
             continue
         rid = str(http.get("request_id", "")).strip()
         if rid not in confirmed:
@@ -160,10 +191,38 @@ def solve(evidence_dir) -> dict:
             break
     if not attacker:
         return None
-    return {
-        "attacker_ip": attacker,
-        "compromised_user": str(row["identity"].get("subject", "")),
-        "exfil_bytes": str(mag),
-        "first_malicious_event_utc": str(row.get("ts")),
-        "_detail": f"selected audit record: {json.dumps(row, ensure_ascii=False)[:600]}\nmatching proxy line: {proxy_line[:400]}",
-    }
+    detail = f"selected audit record: {json.dumps(row, ensure_ascii=False)[:600]}\nmatching proxy line: {proxy_line[:400]}"
+    if not keys or set(keys) == EXPECTED_KEYS:
+        return {
+            "attacker_ip": attacker,
+            "compromised_user": str(row["identity"].get("subject", "")),
+            "exfil_bytes": str(mag),
+            "first_malicious_event_utc": str(row.get("ts")),
+            "_detail": detail,
+        }
+    mapping = key_mapping(instruction, keys)
+    out = {}
+    for k in keys:
+        lk = k.lower()
+        val = None
+        for path in mapping.get(k, []):
+            v = _lookup(row, path)
+            if v is not None:
+                val = v
+                break
+        if val is None:
+            if "ip" in lk or "addr" in lk or "source" in lk:
+                val = attacker
+            elif "byte" in lk or "size" in lk or "volume" in lk:
+                val = mag
+            elif "utc" in lk or "time" in lk or "ts" == lk or lk.endswith("_at") or "when" in lk:
+                val = row.get("ts")
+            elif "user" in lk or "account" in lk or "subject" in lk or "identity" in lk or "principal" in lk:
+                val = row.get("identity", {}).get("subject")
+            elif "request" in lk or "rid" in lk:
+                val = rid
+        if val is None:
+            return None
+        out[k] = str(val)
+    out["_detail"] = detail
+    return out

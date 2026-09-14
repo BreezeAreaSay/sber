@@ -21,7 +21,7 @@ SOURCE_EXT = {".py", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".php", ".rb", ".go",
               ".env", ".conf", ".json", ".xml", ".properties", ".lua"}
 MAX_FILE_BYTES = 600_000
 MAX_FILES = 600
-MAX_BRIEF_CHARS = 14000
+MAX_BRIEF_CHARS = 16000
 
 
 def iter_files(root: Path, limit: int = MAX_FILES):
@@ -336,6 +336,60 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
                     consider(x, f"{rel} (xor 0x{k:02x})")
         if len(found) > 20:
             break
+    # archive members and git history are where "hidden" flags usually sit
+    try:
+        for p in iter_files(Path(root), limit=max_files):
+            low = p.name.lower()
+            try:
+                if p.stat().st_size > 20_000_000:
+                    continue
+            except OSError:
+                continue
+            if low.endswith(".zip"):
+                import zipfile
+                try:
+                    with zipfile.ZipFile(p) as zf:
+                        for info in zf.infolist()[:60]:
+                            if info.file_size > 3_000_000:
+                                continue
+                            try:
+                                consider(zf.read(info), f"{os.path.relpath(p, root)}:{info.filename}")
+                            except Exception:  # noqa: BLE001
+                                continue
+                except Exception:  # noqa: BLE001
+                    pass
+            elif low.endswith((".tar", ".tgz", ".tar.gz", ".tar.bz2", ".tar.xz")):
+                import tarfile
+                try:
+                    with tarfile.open(p) as tf:
+                        for member in tf.getmembers()[:60]:
+                            if not member.isfile() or member.size > 3_000_000:
+                                continue
+                            fh = tf.extractfile(member)
+                            if fh:
+                                consider(fh.read(), f"{os.path.relpath(p, root)}:{member.name}")
+                except Exception:  # noqa: BLE001
+                    pass
+            elif low.endswith((".gz", ".bz2", ".xz")) and not low.endswith((".tar.gz", ".tar.bz2", ".tar.xz")):
+                import gzip, bz2, lzma
+                opener = gzip.open if low.endswith(".gz") else (bz2.open if low.endswith(".bz2") else lzma.open)
+                try:
+                    with opener(p) as fh:
+                        consider(fh.read(3_000_000), f"{os.path.relpath(p, root)} (decompressed)")
+                except Exception:  # noqa: BLE001
+                    pass
+        git_dir = Path(root) / ".git"
+        if git_dir.is_dir():
+            try:
+                r = subprocess.run(["git", "-C", str(root), "log", "-p", "--all", "--no-color"],
+                                   capture_output=True, timeout=30)
+                consider(r.stdout[:3_000_000], ".git history")
+                r = subprocess.run(["git", "-C", str(root), "stash", "list", "-p"], capture_output=True, timeout=15)
+                consider(r.stdout[:1_000_000], ".git stash")
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
     uniq = []
     seen = set()
     for v, s in found:
@@ -383,8 +437,15 @@ def build(spec, workdir: Path, log=print) -> dict:
             heads = data_heads(root)
             if heads:
                 sections.append(f"Files under {root} (size, line count, first lines):\n{heads}")
+        if kind in ("kv_report", "generic"):
+            from acpagent import digest
+            root = Path(spec.evidence_dir) if spec.evidence_dir else workdir
+            dg = digest.digest_dir(root)
+            if dg:
+                sections.append("Pre-computed facts per file (counts are over the whole file; verify the rare "
+                                "events — they are usually the interesting ones):\n" + dg)
     except Exception as exc:  # noqa: BLE001
-        log(f"[brief] data heads failed: {exc}")
+        log(f"[brief] data digest failed: {exc}")
     try:
         if kind == "ctf":
             cands = flag_candidates(workdir, spec.flag_prefix)
