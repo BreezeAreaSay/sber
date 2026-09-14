@@ -25,7 +25,10 @@ from acpagent.llm import (LLM, BudgetExceeded, ContextTooLong, ToolCall, ToolsUn
 SOFT_DEADLINE_SEC = float(os.environ.get("LOCAL_AGENT_DEADLINE_SEC") or 520)
 HARD_GRACE_SEC = 12
 TOKEN_BUDGET = int(os.environ.get("LOCAL_AGENT_TOKEN_BUDGET") or 140000)
-MAX_ROUNDS = int(os.environ.get("LOCAL_AGENT_MAX_ROUNDS") or 48)
+MAX_ROUNDS = int(os.environ.get("LOCAL_AGENT_MAX_ROUNDS") or 40)
+# Per-kind caps: an audit report is merged with the scan anyway, so a weak model should
+# not spend the whole budget polishing it; code fixes and CTFs get more room.
+ROUND_CAPS = {"json_report": 16, "kv_report": 22, "ctf": 26, "code_fix": 32, "generic": 22, "exact": 6}
 MAX_CORRECTIONS = 8
 HISTORY_CHAR_CAP = int(os.environ.get("LOCAL_AGENT_HISTORY_CHARS") or 70000)
 KEEP_RECENT_ROUNDS = 4
@@ -476,7 +479,8 @@ def run_loop(st: State):
     error_streak = 0     # consecutive tool results that were errors
     no_call_rounds = 0   # rounds without any tool call while tools were advertised
     ever_called = False
-    while rounds < MAX_ROUNDS:
+    max_rounds = min(MAX_ROUNDS, ROUND_CAPS.get(sp.kind, MAX_ROUNDS))
+    while rounds < max_rounds:
         if llm.exhausted():
             log("budget exhausted; leaving the loop")
             break
