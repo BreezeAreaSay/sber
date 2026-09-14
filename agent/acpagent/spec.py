@@ -91,6 +91,7 @@ class Spec:
     kind: str = "generic"                # exact | kv_report | json_report | ctf | code_fix | generic
     deliverable: str = ""                # absolute path of the graded file, if the task names one
     exact_content: str = None
+    exact_files: list = field(default_factory=list) # [(path, content)] for multi-file exact tasks
     keys: list = field(default_factory=list)        # kv_report keys, in statement order
     json_fields: list = field(default_factory=list) # per-finding fields for a json report
     json_root: str = "findings"
@@ -164,21 +165,33 @@ def find_evidence_dir(text: str, workdir: Path) -> str:
     return ""
 
 
-def extract_exact(text: str):
+def extract_exact_all(text: str):
+    """Every (path, exact content) pair the statement pins down, in order."""
+    matches = []
     for rx in _EXACT_CONTENT_RES:
-        cm = rx.search(text)
-        if not cm:
-            continue
-        content = cm.group(1)
-        paths = _abs_paths(text)
-        before = [p for pos, p in paths if pos < cm.start()]
-        chosen = before[-1] if before else (paths[0][1] if paths else "")
+        for cm in rx.finditer(text):
+            matches.append((cm.start(), cm.group(1)))
+    matches.sort()
+    paths = _abs_paths(text)
+    rel = [(m.start(), m.group(1)) for m in _BACKTICK_REL_RE.finditer(text)]
+    out = []
+    used = set()
+    for pos, content in matches:
+        before = [p for ppos, p in paths if ppos < pos and p not in used and "." in p.rsplit("/", 1)[-1]]
+        chosen = before[-1] if before else ""
         if not chosen:
-            rel = _BACKTICK_REL_RE.findall(text)
-            chosen = rel[0] if rel else ""
-        if chosen and "." in chosen.rsplit("/", 1)[-1]:
-            return chosen, content
-    return None
+            rb = [p for ppos, p in rel if ppos < pos and p not in used]
+            chosen = rb[-1] if rb else ""
+        if not chosen:
+            continue
+        used.add(chosen)
+        out.append((chosen, content))
+    return out
+
+
+def extract_exact(text: str):
+    pairs = extract_exact_all(text)
+    return pairs[0] if pairs else None
 
 
 def extract_keys(text: str) -> list:
@@ -262,11 +275,11 @@ def triage(instruction: str, workdir: Path) -> Spec:
     spec.evidence_dir = find_evidence_dir(text, workdir)
     spec.flag_prefix = flag_prefix(text)
 
-    exact = extract_exact(text)
-    if exact:
+    exact_all = extract_exact_all(text)
+    if exact_all:
         spec.kind = "exact"
-        spec.deliverable, spec.exact_content = exact
-        spec.deliverable = _absolute(spec.deliverable, workdir)
+        spec.exact_files = [(_absolute(pth, workdir), content) for pth, content in exact_all]
+        spec.deliverable, spec.exact_content = spec.exact_files[0]
         return spec
 
     keys = extract_keys(text)
@@ -301,7 +314,9 @@ def triage(instruction: str, workdir: Path) -> Spec:
     if fix_hit:
         spec.kind = "code_fix"
         spec.test_cmd = extract_test_cmd(text, workdir)
-        spec.deliverable = ""
+        # A fix task may also demand a written artefact (notes, a patch file, a summary).
+        path = find_deliverable(text, workdir)
+        spec.deliverable = _absolute(path, workdir) if path and _near_write_verb(text, text.find(path.rsplit("/", 1)[-1])) else ""
         return spec
 
     if forensics_hit and keys:

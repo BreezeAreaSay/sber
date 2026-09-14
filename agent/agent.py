@@ -265,7 +265,11 @@ def check_done(st: State, final_text: str):
     sp = st.spec
     try:
         if sp.kind == "exact":
-            return oracle.check_exact(sp.deliverable, sp.exact_content)
+            for pth, content in (sp.exact_files or [(sp.deliverable, sp.exact_content)]):
+                ok, why = oracle.check_exact(pth, content)
+                if not ok:
+                    return ok, why
+            return True, ""
         if sp.kind == "json_report":
             return oracle.check_json_report(sp.deliverable, sp.json_root, sp.json_fields)
         if sp.kind == "kv_report":
@@ -325,6 +329,10 @@ def check_code_fix(st: State):
             log("test command produced no usable result; not blocking on it")
         else:
             st.tests_passed = True
+    if st.spec.deliverable:
+        ok, why = oracle.check_nonempty(st.spec.deliverable)
+        if not ok:
+            return False, f"the task also asks for a written file: {why}"
     if not st.critical_nudged:
         crit = [h for h in oracle.remaining_critical(st.workdir) if h["label"].startswith("SQL") or "command" in h["label"].lower()]
         if crit:
@@ -370,6 +378,8 @@ def mechanical_sql_fix(st: State) -> bool:
     st.tests_passed = True
     remaining = [h for h in brief.scan_hotspots(st.workdir)
                  if h["severity"] in ("critical", "high") and h["category"] not in brief.AUDIT_ONLY_CATEGORIES]
+    if st.spec.deliverable:
+        remaining.append({"file": st.spec.deliverable, "line": 0, "label": "deliverable still to be written"})
     if not remaining:
         log("code_fix solved deterministically: SQL parameterized, tests pass, no risky patterns left (0 tokens)")
         return True
@@ -533,9 +543,10 @@ def finalize(st: State):
         return
     try:
         if sp.kind == "exact":
-            ok, _ = oracle.check_exact(sp.deliverable, sp.exact_content)
-            if not ok:
-                oracle.write_text(sp.deliverable, sp.exact_content)
+            for pth, content in (sp.exact_files or [(sp.deliverable, sp.exact_content)]):
+                ok, _ = oracle.check_exact(pth, content)
+                if not ok:
+                    oracle.write_text(pth, content)
         elif sp.kind == "json_report":
             ok, why = oracle.check_json_report(sp.deliverable, sp.json_root, sp.json_fields)
             if not ok:
@@ -610,10 +621,13 @@ def telemetry(st: State):
 def run(st: State):
     sp = st.spec
     if sp.kind == "exact":
-        oracle.write_text(sp.deliverable, sp.exact_content)
-        ok, why = oracle.check_exact(sp.deliverable, sp.exact_content)
-        log(f"exact file written deterministically ({'ok' if ok else why})")
-        if ok:
+        all_ok = True
+        for pth, content in (sp.exact_files or [(sp.deliverable, sp.exact_content)]):
+            oracle.write_text(pth, content)
+            ok, why = oracle.check_exact(pth, content)
+            log(f"exact file {pth} written deterministically ({'ok' if ok else why})")
+            all_ok = all_ok and ok
+        if all_ok:
             return
     if sp.kind == "kv_report" and set(sp.keys) == forensic_seed.EXPECTED_KEYS:
         root = sp.evidence_dir or str(st.workdir)
