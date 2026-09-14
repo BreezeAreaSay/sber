@@ -108,6 +108,7 @@ class LLM:
         self.stream = os.environ.get("LOCAL_AGENT_NO_STREAM", "") == ""
         self._stream_failures = 0
         self._stream_options = True
+        self._model_retried = False
 
     # ---- budget -----------------------------------------------------------------
 
@@ -130,8 +131,20 @@ class LLM:
     # ---- discovery ---------------------------------------------------------------
 
     def discover_model(self) -> str:
-        """Resolve a model id when none was configured, via GET /models."""
+        """Resolve a model id when none was configured, via GET /models. A configured
+        name that the server does not list is replaced only when the server offers
+        exactly one model (a local endpoint serving a single model)."""
         if self.model:
+            try:
+                req = urllib.request.Request(self.models_url, headers=self._headers())
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = json.loads(resp.read().decode("utf-8", "replace"))
+                ids = [it.get("id") for it in (data.get("data") or data.get("models") or []) if isinstance(it, dict) and it.get("id")]
+                if ids and self.model not in ids and len(ids) == 1:
+                    self.log(f"[llm] configured model {self.model!r} not served; the endpoint serves {ids[0]!r}, using it")
+                    self.model = ids[0]
+            except Exception:  # noqa: BLE001
+                pass
             return self.model
         try:
             req = urllib.request.Request(self.models_url, headers=self._headers())
@@ -208,6 +221,15 @@ class LLM:
                 self.last_error = f"HTTP {exc.code}: {err_text[:300]}"
                 self.log(f"[llm] call failed: {self.last_error}"[:400])
                 if exc.code in (400, 404, 422):
+                    if ("model" in low and ("not found" in low or "does not exist" in low or "unknown model" in low
+                                            or "not exist" in low or "no such model" in low)) and not self._model_retried:
+                        self._model_retried = True
+                        old_model = self.model
+                        self.model = ""
+                        if self.discover_model() != old_model and self.model:
+                            self.log(f"[llm] model {old_model!r} unknown to the server; using {self.model!r}")
+                            continue
+                        self.model = old_model or "default"
                     if self.stream and self._stream_options and "stream_options" in low:
                         self.log("[llm] endpoint rejects stream_options; retrying without it")
                         self._stream_options = False
