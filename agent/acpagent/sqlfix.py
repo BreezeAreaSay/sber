@@ -231,8 +231,8 @@ def apply(workdir):
     workdir = Path(workdir)
     originals = {}
     notes = []
-    files = [p for p in workdir.rglob("*.py") if ".venv" not in p.parts and "site-packages" not in p.parts
-             and "node_modules" not in p.parts and not p.name.startswith("test")]
+    skip = {".venv", "venv", "site-packages", "node_modules", "build", "dist", ".git", "__pycache__", ".eggs"}
+    files = [p for p in workdir.rglob("*.py") if not (set(p.parts) & skip) and not p.name.startswith("test")]
     tree_text = "\n".join(p.read_text(encoding="utf-8", errors="replace")[:4000] for p in files[:60]
                           if p.name in ("db.py", "database.py", "main.py", "app.py", "requirements.txt"))
     for p in files:

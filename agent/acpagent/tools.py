@@ -8,7 +8,6 @@ has. Dispatch is forgiving about invented names and argument keys because answer
 
 import difflib
 import os
-import py_compile
 import re
 import signal
 import subprocess
@@ -16,6 +15,19 @@ import tempfile
 from pathlib import Path
 
 MAX_TOOL_OUTPUT_CHARS = 6500
+# Original content of every file the model edits (None for files it created), so a
+# file left syntactically broken at the end can be restored.
+ORIGINALS = {}
+
+
+def _remember_original(fp):
+    key = str(fp)
+    if key in ORIGINALS:
+        return
+    try:
+        ORIGINALS[key] = fp.read_text(encoding="utf-8", errors="replace") if fp.is_file() else None
+    except OSError:
+        ORIGINALS[key] = None
 DEFAULT_BASH_TIMEOUT = 120
 MAX_BASH_TIMEOUT = 240
 BINARY_SNIFF = 4096
@@ -182,6 +194,7 @@ def write_file(path, content, workdir: Path) -> str:
         except Exception:  # noqa: BLE001
             content = str(content)
     try:
+        _remember_original(fp)
         fp.parent.mkdir(parents=True, exist_ok=True)
         with fp.open("w", encoding="utf-8", newline="") as stream:
             stream.write(content)
@@ -230,12 +243,30 @@ def str_replace(path, old, new, workdir: Path) -> str:
                 f"(same indentation and line breaks). Closest text in the file:\n{hint}")
     if count > 1:
         return f"[error] old_str occurs {count} times in {fp}; include more surrounding lines so it is unique."
+    _remember_original(fp)
+    idx = body.find(old)
     try:
         with fp.open("w", encoding="utf-8", newline="") as stream:
-            stream.write(body.replace(old, new, 1))
+            stream.write(body[:idx] + new + body[idx + len(old):])
     except Exception as exc:  # noqa: BLE001
         return f"[error] {exc}"
     warn = post_write_check(fp)
+    if warn and fp.suffix == ".py" and "\n" in new:
+        # The commonest breakage: continuation lines of the replacement lost the
+        # indentation of the block they were pasted into. Try the shifted variant and
+        # keep it only if the file compiles again.
+        shifted = _shift_following_lines(body, idx, new)
+        if shifted != new:
+            try:
+                with fp.open("w", encoding="utf-8", newline="") as stream:
+                    stream.write(body[:idx] + shifted + body[idx + len(old):])
+                if post_write_check(fp) is None:
+                    return (f"Replaced 1 occurrence in {fp} (the inserted lines were re-indented to match "
+                            f"the surrounding block; re-read the file to confirm).")
+                with fp.open("w", encoding="utf-8", newline="") as stream:
+                    stream.write(body[:idx] + new + body[idx + len(old):])
+            except Exception:  # noqa: BLE001
+                pass
     return f"Replaced 1 occurrence in {fp}." + (f"\n{warn}" if warn else "")
 
 
@@ -282,6 +313,24 @@ def _reindent(body: str, start: int, new: str) -> str:
     return "\n".join(out)
 
 
+def _shift_following_lines(body: str, idx: int, new: str) -> str:
+    """If the replacement's continuation lines are indented less than the line the
+    match sits on, shift them all by that line's indentation (keeping their relative
+    structure)."""
+    line_start = body.rfind("\n", 0, idx) + 1
+    indent = re.match(r"[ \t]*", body[line_start:]).group(0)
+    if not indent:
+        return new
+    lines = new.replace("\r\n", "\n").split("\n")
+    following = [ln for ln in lines[1:] if ln.strip()]
+    if not following:
+        return new
+    first_indent = re.match(r"[ \t]*", following[0]).group(0)
+    if len(first_indent) >= len(indent):
+        return new
+    return "\n".join([lines[0]] + [(indent + ln) if ln.strip() else ln for ln in lines[1:]])
+
+
 def _closest_snippet(body: str, needle: str) -> str:
     lines = body.splitlines()
     first = next((ln for ln in needle.splitlines() if ln.strip()), needle.strip())
@@ -300,7 +349,7 @@ def post_write_check(fp: Path):
     suffix = fp.suffix.lower()
     try:
         if suffix == ".py":
-            py_compile.compile(str(fp), doraise=True, cfile=os.devnull)
+            compile(fp.read_text(encoding="utf-8", errors="replace"), str(fp), "exec")
         elif suffix == ".json":
             import json
             json.loads(fp.read_text(encoding="utf-8", errors="replace"))
@@ -314,8 +363,9 @@ def post_write_check(fp: Path):
                 p = subprocess.run(["node", "--check", str(fp)], capture_output=True, text=True, timeout=20)
                 if p.returncode != 0:
                     return "[warning] node --check reports a syntax error:\n" + truncate(p.stderr, 800)
-    except py_compile.PyCompileError as exc:
-        return f"[warning] the file now has a Python syntax error - fix it before finishing:\n{truncate(str(exc), 800)}"
+    except SyntaxError as exc:
+        return (f"[warning] the file now has a Python syntax error - fix it before finishing: "
+                f"line {exc.lineno}: {exc.msg}\n    {(exc.text or '').rstrip()[:160]}")
     except ValueError as exc:
         return f"[warning] the file is not valid JSON: {exc}"
     except Exception:  # noqa: BLE001

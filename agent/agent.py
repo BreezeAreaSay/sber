@@ -415,6 +415,7 @@ def run_loop(st: State):
     repeat = 0
     context_retries = 0
     final_text = ""
+    edit_counts = {}
     while rounds < MAX_ROUNDS:
         if llm.exhausted():
             log("budget exhausted; leaving the loop")
@@ -503,6 +504,15 @@ def run_loop(st: State):
                 if inside and (not sp.deliverable or target != os.path.abspath(sp.deliverable)):
                     result = (f"[error] this task forbids modifying application files; write only the deliverable "
                               f"{sp.deliverable or ''} (helper scripts can go under /tmp)")
+                else:
+                    result = tools.dispatch(c.name, c.arguments, st.workdir)
+            elif c.name in ("write_file", "str_replace"):
+                key = (c.name, json.dumps(c.arguments, sort_keys=True, ensure_ascii=False))
+                edit_counts[key] = edit_counts.get(key, 0) + 1
+                if edit_counts[key] > 2:
+                    result = ("[error] You already applied this exact edit twice and the problem is still there. "
+                              "Do something different: read_file the whole function, then rewrite it correctly "
+                              "(complete, properly indented) with write_file or a larger str_replace.")
                 else:
                     result = tools.dispatch(c.name, c.arguments, st.workdir)
             else:
@@ -610,6 +620,8 @@ def finalize(st: State):
                 oracle.extract_flag(st.final_text or "", sp.flag_prefix) or (st.seen_flags[-1] if st.seen_flags else None)
             if flag:
                 print(f"FLAG: {flag}", flush=True)
+        elif sp.kind == "code_fix":
+            restore_broken_files(st)
         elif sp.kind == "generic" and sp.deliverable and not Path(sp.deliverable).is_file() and st.final_text:
             body = st.final_text.strip()
             body = re.sub(r"^DONE[:.\s-]*", "", body, flags=re.I).strip()
@@ -620,6 +632,26 @@ def finalize(st: State):
         traceback.print_exc()
     if st.final_text:
         print(f"[agent] final reply: {st.final_text[:1500]}", flush=True)
+
+
+def restore_broken_files(st: State):
+    """A file left with a syntax error guarantees a 0 (the app cannot start); restoring
+    its original content at least keeps fixes made in other files alive."""
+    for path, original in list(tools.ORIGINALS.items()):
+        p = Path(path)
+        if p.suffix != ".py" or not p.is_file():
+            continue
+        if not oracle.compile_errors([p]):
+            continue
+        try:
+            if original is None:
+                p.unlink()
+                log(f"removed {path}: it was created during the run and does not compile")
+            else:
+                p.write_text(original, encoding="utf-8")
+                log(f"restored {path}: the edited version does not compile")
+        except OSError as exc:
+            log(f"could not restore {path}: {exc}")
 
 
 def telemetry(st: State):
