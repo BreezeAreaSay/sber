@@ -118,7 +118,11 @@ class LLM:
         )
 
     def _timeout(self) -> float:
+        """Total time one call may take. A streamed call may run until the deadline (its
+        idle timeout catches hangs); a plain call is capped so a stall cannot eat the run."""
         rem = self.remaining() - RESERVE_SEC
+        if self.stream:
+            return max(0.0, rem)
         return max(0.0, min(MAX_CALL_TIMEOUT, rem))
 
     # ---- discovery ---------------------------------------------------------------
@@ -188,6 +192,9 @@ class LLM:
                 else:
                     data = self._request_plain(body, timeout)
                 return self._parse(data, messages)
+            except GenerationTooLong as exc:
+                self.failures += 1
+                raise BudgetExceeded(str(exc))
             except urllib.error.HTTPError as exc:
                 self.failures += 1
                 try:
@@ -235,8 +242,6 @@ class LLM:
                 spent = time.monotonic() - started
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 self.log(f"[llm] call failed after {spent:.0f}s: {self.last_error}"[:300])
-                if isinstance(exc, GenerationTooLong):
-                    raise BudgetExceeded(str(exc))
                 if spent >= timeout * 0.9 or isinstance(exc, (socket.timeout, TimeoutError)):
                     if self.stream and self._stream_failures == 0 and self.remaining() > 60:
                         # A stream that stalled once may be a server that buffers the whole
