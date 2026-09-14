@@ -434,6 +434,14 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
         if v not in seen:
             seen.add(v)
             uniq.append((v, s))
+    # Rank: exact prefix match first, then the most "flag-like" body (a decode with the
+    # wrong key leaves punctuation garbage inside the braces).
+    def score(item):
+        v, src = item
+        body = v[v.find("{") + 1:-1]
+        garbage = sum(1 for ch in body if not (ch.isalnum() or ch in "_-!?@#$.,: +=/"))
+        return (0 if (prefix and v.startswith(prefix)) else 1, garbage, -len(body), 0 if "xor" not in src and "(" not in src else 1)
+    uniq.sort(key=score)
     return uniq[:12]
 
 
