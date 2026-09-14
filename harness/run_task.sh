@@ -13,7 +13,10 @@ MODEL_NAME="${MODEL_NAME:-qwen3-4b}"
 OUT="$HERE/out/$TASK"; rm -rf "$OUT"; mkdir -p "$OUT"
 IMG="task-$TASK"
 C="t-$TASK"
-AGENT_TIMEOUT="${AGENT_TIMEOUT:-$(python3 -c "import tomllib;print(int(tomllib.load(open('$TDIR/task.toml','rb'))['agent']['timeout_sec']))" 2>/dev/null || echo 600)}"
+# Local CPU inference is ~10x slower than the competition endpoint: allow longer local runs
+# (override with AGENT_TIMEOUT / LOCAL_DEADLINE to test the real limits).
+AGENT_TIMEOUT="${AGENT_TIMEOUT:-1500}"
+LOCAL_DEADLINE="${LOCAL_DEADLINE:-1300}"
 INSTR=$(cat "$TDIR/instruction.md")
 
 docker rm -f "$C" >/dev/null 2>&1
@@ -35,7 +38,7 @@ docker exec "$C" chmod +x /opt/harbor/local-agent/run.sh
 START=$(date +%s)
 timeout --signal=KILL "$AGENT_TIMEOUT" docker exec -w /opt/harbor/local-agent \
   -e LOCAL_AGENT_MODEL="$MODEL_NAME" -e OPENAI_BASE_URL="$MODEL_URL" -e OPENAI_API_KEY=local \
-  -e LOCAL_AGENT_WORKDIR=/opt/harbor/local-agent \
+  -e LOCAL_AGENT_WORKDIR=/opt/harbor/local-agent -e LOCAL_AGENT_DEADLINE_SEC="$LOCAL_DEADLINE" \
   "$C" sh -c './run.sh "$0" 2>&1' "$INSTR" > "$OUT/agent.log" 2>&1
 RC=$?
 END=$(date +%s)

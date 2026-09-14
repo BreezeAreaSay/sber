@@ -79,6 +79,11 @@ def run_bash(command: str, workdir: Path, timeout: float = DEFAULT_BASH_TIMEOUT)
         else:
             code = proc.returncode
         body = data if data.strip() else "<no output>"
+        if code != 0 and "syntax error" in data and ("python3 -c" in command or "python -c" in command):
+            body += ("\n[hint] shell quoting broke the inline script. Write it as a heredoc instead:\n"
+                     "python3 - <<'EOF'\n<script>\nEOF")
+        elif code != 0 and ("syntax error" in data or "unexpected EOF" in data) and "<<" in command:
+            body += "\n[hint] the heredoc terminator must be on its own line and match exactly (EOF)."
         return truncate(f"[exit {code}]\n{body}")
     except Exception as exc:  # noqa: BLE001
         return f"[error] {exc}"
