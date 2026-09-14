@@ -77,6 +77,14 @@ def detect_tz(header_text: str):
             sign = -1 if hours < 0 else 1
             tz = timezone(timedelta(hours=hours, minutes=sign * mins))
             label = f"UTC{hours:+03d}:{mins:02d}"
+    if tz is None and ZoneInfo is not None:
+        # a bare "Asia/Tokyo" mentioned in prose, validated by actually resolving it
+        for cand in re.findall(r"\b([A-Z][A-Za-z_]+/[A-Za-z_+-]+)\b", header_text):
+            try:
+                tz, label = ZoneInfo(cand), cand
+                break
+            except Exception:  # noqa: BLE001
+                continue
     ym = _YEAR_RE.search(header_text)
     if ym:
         year = int(ym.group(1) or ym.group(2))
@@ -452,6 +460,36 @@ def file_kind(logical, p: Path) -> str:
     return "other"
 
 
+def jsonl_facts(rows, tz, label, year):
+    """Per-subject facts of a JSON-lines audit stream, with every field kept flat.
+
+    Deliberately schema-agnostic: the subject, the action and the numeric fields are
+    discovered from the data, so a stream this code has never seen still yields the
+    aggregations a statement can ask for."""
+    subj_names = ("subject", "user", "username", "account", "principal", "actor", "login", "identity", "who")
+    act_names = ("event", "action", "type", "operation", "activity", "op", "kind")
+    per_subject, actions, fields = {}, Counter(), Counter()
+    flat_rows = []
+    for row in rows:
+        flat = _flatten(row)
+        for k in flat:
+            fields[k] += 1
+        subj = next((str(v) for k, v in flat.items()
+                     if k.split(".")[-1] in subj_names and isinstance(v, str)), None)
+        act = next((str(v) for k, v in flat.items()
+                    if k.split(".")[-1] in act_names and isinstance(v, str)), None)
+        ts = next((str(v) for k, v in flat.items()
+                   if k.split(".")[-1] in ("ts", "timestamp", "time", "@timestamp", "date")), None)
+        rec = {"row": row, "flat": flat, "subject": subj, "action": act, "ts": ts}
+        flat_rows.append(rec)
+        if act:
+            actions[act] += 1
+        if subj:
+            per_subject.setdefault(subj, []).append(rec)
+    return {"kind": "jsonl", "per_subject": per_subject, "actions": actions, "fields": fields,
+            "rows": flat_rows, "tz": tz, "label": label, "year": year, "per_ip": {}}
+
+
 def file_facts(p: Path):
     """Structured facts of one evidence file (None when it is not a recognised log)."""
     loaded = load_logical(p)
@@ -463,6 +501,18 @@ def file_facts(p: Path):
         facts = auth_facts(logical, tz, label, year)
     elif kind == "access":
         facts = access_facts(logical, tz, label, year)
+    elif kind == "jsonl":
+        rows = []
+        for ln in logical[:200_000]:
+            ln = ln.strip()
+            if ln.startswith("{"):
+                try:
+                    rows.append(json.loads(ln))
+                except ValueError:
+                    pass
+        if not rows:
+            return None
+        facts = jsonl_facts(rows, tz, label, year)
     else:
         return None
     facts.update({"path": p, "kind": kind, "lines": logical})
@@ -479,7 +529,7 @@ def dir_facts(root: Path, limit_files: int = 30):
         except OSError:
             continue
         f = file_facts(p)
-        if f and f["per_ip"]:
+        if f and (f.get("per_ip") or f.get("per_subject")):
             out.append(f)
     return out
 

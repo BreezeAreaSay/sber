@@ -12,6 +12,7 @@ Nothing here is specific to one dataset: the suspect is chosen from the evidence
 succeeded after failing), and every value is copied from a real log line.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -54,6 +55,25 @@ def _xff_client(ln: str):
     chain = [h.strip() for h in (m.group(1) or m.group(2) or "").split(",") if h.strip()]
     public = [h for h in chain if profile._IPV4.fullmatch(h) and not profile._is_private(h)]
     return public[-1] if public else None
+
+
+# An attack class named in words ("directory traversal", "SQL injection") pins the
+# count as precisely as a backticked literal does.
+_CONCEPTS = (
+    (("traversal", "dot-dot", "dotdot", "directory traversal", "path traversal", "обход", "каталог"),
+     re.compile(r"\.\./|%2e%2e|\.\.%2f", re.I), "path-traversal"),
+    (("sql injection", "sqli", "union select", "injection"),
+     re.compile(r"union\s+select|'\s*or\s*'|%27|--\s*$|\bor\s+1=1", re.I), "SQL-injection"),
+    (("xss", "cross-site script"), re.compile(r"<script|onerror\s*=|javascript:", re.I), "XSS"),
+    (("command injection", "rce", "shell"), re.compile(r";\s*(?:id|ls|cat|whoami)\b|\$\(|`", re.I), "command-injection"),
+)
+
+
+def _concept_for(ctx: str):
+    for words, rx, name in _CONCEPTS:
+        if any(w in ctx for w in words):
+            return rx, name
+    return None, ""
 
 
 def _parts(key: str):
@@ -118,6 +138,110 @@ def _count_lines(lines, literals):
     return sum(1 for ln in lines if any(l.lower() in ln.lower() for l in literals))
 
 
+def _jsonl_pick(facts_list, instruction: str):
+    """(facts, subject, filtered rows, action) for a JSON-lines audit stream."""
+    lits = [l.strip() for l in _LITERAL_RE.findall(instruction or "")]
+    for f in facts_list:
+        if f.get("kind") != "jsonl" or not f.get("per_subject"):
+            continue
+        field_names = {k.split(".")[-1] for k in f["fields"]}
+        # a literal that is an action VALUE (not a field name) selects the records
+        action = next((l for l in lits if l in f["actions"] and l not in field_names), None)
+        if action is None:
+            rare = [a for a, c in f["actions"].items() if c <= max(3, sum(f["actions"].values()) * 0.1)]
+            action = rare[0] if len(rare) == 1 else None
+        best, rows = None, []
+        for subj, recs in f["per_subject"].items():
+            sel = [r for r in recs if action is None or r["action"] == action]
+            if not sel:
+                continue
+            if best is None or len(sel) > len(rows):
+                best, rows = subj, sel
+        if best is not None and rows:
+            return f, best, rows, action
+    return None
+
+
+def _numeric_field(clause, instruction, rows):
+    """The numeric field the clause names (`bytes`, `payload_logical_bytes`, ...)."""
+    names = set()
+    for r in rows:
+        for k, v in r["flat"].items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                names.add(k)
+    for text in (clause, instruction or ""):
+        for lit in _LITERAL_RE.findall(text):
+            lit = lit.strip()
+            for n in names:
+                if n == lit or n.split(".")[-1] == lit:
+                    return n
+    for n in names:
+        if n.split(".")[-1] in ("bytes", "size", "payload_logical_bytes", "length", "volume"):
+            return n
+    return None
+
+
+def _solve_jsonl(facts, subject, rows, action, keys, instruction, clauses):
+    seed, conf, detail = {}, {}, []
+    tz, label, year = facts.get("tz"), facts.get("label"), facts.get("year")
+    for k in keys:
+        parts = _parts(k)
+        clause = clauses.get(k, "")
+        ctx = (clause + " " + " ".join(parts)).lower()
+        value, why, c = None, "", "low"
+        # the key NAME decides the type; the prose around a key mentions every other
+        # field too ("the `ts` of that actor's first `bulk_export` record")
+        by_name = None
+        for lbl, words in (("user", _USER_WORDS), ("bytes", _BYTES_WORDS), ("count", _COUNT_WORDS),
+                           ("time", _TIME_WORDS), ("time", _ORDINAL_WORDS)):
+            if any(w in parts for w in words):
+                by_name = lbl
+                break
+        if by_name is None:
+            if any(w in ctx for w in ("actor", "subject", "identity", "who", "account")):
+                by_name = "user"
+            elif any(w in ctx for w in ("utc", "timestamp", "time")):
+                by_name = "time"
+            elif any(w in ctx for w in ("bytes", "size", "sum")):
+                by_name = "bytes"
+            elif any(w in ctx for w in ("how many", "number of", "count")):
+                by_name = "count"
+        if by_name == "user":
+            value, why, c = subject, f"the {('`' + action + '` ') if action else ''}subject in the audit stream", "high"
+        elif by_name == "time":
+            pick = rows[-1] if ("last" in ctx and "first" not in ctx) else rows[0]
+            raw = pick["ts"]
+            if raw is None:
+                continue
+            verbatim = any(w in ctx for w in ("verbatim", "copied", "exactly", "as-is", "дословно"))
+            if verbatim or raw.endswith("Z"):
+                value = raw
+            else:
+                dt = profile.parse_ts(raw, tz, year)
+                value = profile.fmt_utc(dt, digits=profile._fraction_digits(raw)) if dt else raw
+            why, c = ("last" if ("last" in ctx and "first" not in ctx) else "first") + " matching record's timestamp", "high"
+            detail.append(f"- {k}={value}  ({why}; record: {json.dumps(pick['row'], ensure_ascii=False)[:180]})")
+            seed[k], conf[k] = str(value), c
+            continue
+        elif by_name == "bytes":
+            fld = _numeric_field(clause, instruction, rows)
+            if fld:
+                total = sum(r["flat"].get(fld, 0) or 0 for r in rows)
+                value, why, c = str(int(total)), f"sum of `{fld}` over the {len(rows)} matching records", "high"
+        elif by_name == "count":
+            value, why, c = str(len(rows)), "number of matching records", "high"
+        if value in (None, ""):
+            continue
+        seed[k], conf[k] = str(value), c
+        detail.append(f"- {k}={value}  ({why})")
+    if not seed:
+        return None, {}
+    head = (f"Derived from {facts['path'].name} (JSON-lines audit; subject {subject}"
+            + (f", action `{action}`" if action else "") + f", {len(rows)} records):")
+    seed["_detail"] = head + "\n" + "\n".join(detail)
+    return seed, conf
+
+
 def _pick_source(facts_list, instruction: str):
     """Choose the evidence file and suspect the statement is about."""
     low = (instruction or "").lower()
@@ -169,10 +293,23 @@ def solve(root, keys, instruction: str):
     facts_list = profile.dir_facts(Path(root))
     if not facts_list:
         return None, {}
+    clauses_all = _clauses(instruction, keys)
+    jl = _jsonl_pick(facts_list, instruction)
+    if jl is not None:
+        got, gconf = _solve_jsonl(jl[0], jl[1], jl[2], jl[3], keys, instruction, clauses_all)
+        if got and all(k in got for k in keys):
+            return got, gconf
     src = _pick_source(facts_list, instruction)
     if src is None:
         return None, {}
     _, kind, facts, ip, rec, hits = src
+    if facts.get("tz") is None or facts.get("year") is None:
+        # the statement often declares the host clock the file itself does not record
+        itz, ilabel, iyear = profile.detect_tz(instruction or "")
+        if facts.get("tz") is None and itz is not None:
+            facts["tz"], facts["label"] = itz, ilabel
+        if facts.get("year") is None and iyear:
+            facts["year"] = iyear
     literals = _attack_literals(instruction)
     clauses = _clauses(instruction, keys)
     seed, conf, detail = {}, {}, []
@@ -224,6 +361,8 @@ def solve(root, keys, instruction: str):
         is_ip, is_user, is_time = by_name == "ip", by_name == "user", by_name == "time"
         is_count, is_path, is_bytes, is_id = by_name == "count", by_name == "path", by_name == "bytes", by_name == "id"
         value, why, c, src_line = None, "", "low", None
+        # the key name is usually more precise than the prose around it
+        ctx = (clause + " " + " ".join(parts)).lower()
         # order matters: 'first_attack_utc' is a time even though 'attack' is not a time word,
         # 'attacker_ip' is an IP even though 'first' may appear in its clause.
         if is_ip:
@@ -238,14 +377,14 @@ def solve(root, keys, instruction: str):
         elif is_count:
             own = [l for l in _attack_literals(clause) if any(l.lower() in ln.lower() for ln in lines)]
             if kind == "auth":
-                whole = any(w in clause for w in ("total", "all ", "whole", "entire", "overall", "in total", "всего"))
-                if "before" in clause and any(w in clause for w in ("success", "accepted", "login", "success")):
+                whole = any(w in ctx for w in ("total", "all ", "whole", "entire", "overall", "in total", "всего"))
+                if "before" in ctx and any(w in ctx for w in ("success", "accepted", "login")):
                     value, why, c = str(rec["failed_before"]), "Failed lines from that IP before its first Accepted line", "high"
-                elif "invalid" in clause:
+                elif "invalid" in ctx:
                     value, why, c = str(rec["invalid"]), "Invalid user lines from that IP", "high"
-                elif whole and any(w in clause for w in ("fail", "unsuccessful", "wrong", "rejected", "неудач")):
+                elif whole and any(w in ctx for w in ("fail", "unsuccessful", "wrong", "rejected", "неудач")):
                     value, why, c = str(rec["failed"]), "all Failed lines from that IP", "high"
-                elif any(w in clause for w in ("fail", "unsuccessful", "wrong", "rejected", "неудач")):
+                elif any(w in ctx for w in ("fail", "unsuccessful", "wrong", "rejected", "неудач")):
                     # bare "failed attempts" is ambiguous (total vs before success); if the IP
                     # never succeeded the two are equal, so it is safe; otherwise let the model decide
                     if rec["first_accept"] is None:
@@ -255,9 +394,23 @@ def solve(root, keys, instruction: str):
                 else:
                     value, why, c = str(rec["failed"]), "Failed lines from that IP (default reading)", "low"
             else:
+                status_m = re.search(r"\b([1-5]\d{2})\b", clause)
+                asks_status = bool(status_m) and any(w in clause for w in ("http", "status", "respon", "answered",
+                                                                           "returned", "code", "статус", "ответ"))
+                crx, cname = _concept_for(ctx)
                 if own:
                     value, why, c = str(_count_lines(lines, own)), f"requests from that client containing {', '.join(own)}", "high"
-                elif any(w in clause for w in ("4xx", "404", "403", "error", "denied", "failed")):
+                elif crx is not None and not asks_status:
+                    n = sum(1 for ln in lines if crx.search(ln))
+                    if n:
+                        value, why, c = str(n), f"{cname} requests from that client (the class the task names)", "high"
+                elif asks_status:
+                    # "how many requests were answered with HTTP 403" means exactly 403,
+                    # not the whole 4xx/5xx family
+                    code = status_m.group(1)
+                    n = sum(1 for pr in rec["parsed"] if pr.get("status") == code)
+                    value, why, c = str(n), f"requests from that client answered with HTTP {code}", "high"
+                elif any(w in clause for w in ("4xx", "5xx", "error", "denied", "failed", "unsuccessful")):
                     value, why, c = str(rec["err"]), "4xx/5xx responses to that client", "high"
                 elif any(w in clause for w in ("total", "all requests", "every request", "all its requests")):
                     value, why, c = str(rec["n"]), "all requests from that client", "high"
@@ -271,27 +424,27 @@ def solve(root, keys, instruction: str):
             seconds_only = bool(fm and not fm.group("frac"))
             keep_fraction = not seconds_only
             if kind == "auth":
-                if any(w in clause for w in ("success", "accepted", "logged in", "compromis", "successful")) and rec["first_accept"]:
+                if any(w in ctx for w in ("success", "accepted", "logged in", "login", "compromis", "successful", "breach", "вход")) and rec["first_accept"]:
                     src_line = (rec["first_accept_pw"] or rec["first_accept"])[0] if "password" in clause else rec["first_accept"][0]
                     why, c = "first Accepted line of that IP", "high"
-                elif "last" in clause:
+                elif "last" in ctx:
                     src_line, why, c = rec["last"], "last event of that IP", "high"
                 else:
                     src_line = rec["first_failed"] or rec["first"]
-                    why, c = "first Failed line of that IP", "high" if "first" in clause else "low"
+                    why, c = "first Failed line of that IP", "high" if "first" in ctx else "low"
             else:
-                if "last" in clause and "first" not in clause:
+                if "last" in ctx and "first" not in ctx:
                     src_line, why, c = attack[-1], "last attack request of that client", "high"
                 elif any(w in clause for w in ("200", "2xx", "succe", "returned")) and "first" in clause:
                     src_line = first_ok or attack[0]
                     why, c = "first attack request answered 2xx", "high" if first_ok else "low"
                 else:
                     src_line = attack[0]
-                    why, c = "first attack request of that client", "high" if ("first" in clause or "first" in parts) else "low"
+                    why, c = "first attack request of that client", "high" if "first" in ctx else "low"
             value = ts_value(src_line, wants_utc, keep_fraction, seconds_only) if src_line else None
         elif is_user:
             if kind == "auth":
-                if rec["first_accept"] and (any(w in clause for w in ("success", "logged", "compromis", "accepted")) or not rec["users"]):
+                if rec["first_accept"] and (any(w in ctx for w in ("success", "logged", "compromis", "accepted", "victim", "breach")) or not rec["users"]):
                     value, why, c, src_line = rec["first_accept"][1], "account of that IP's first Accepted line", "high", rec["first_accept"][0]
                 elif rec["users"]:
                     value, why, c = rec["users"].most_common(1)[0][0], "account most often tried from that IP", "low"

@@ -33,6 +33,10 @@ _EXACT_CONTENT_RES = (
 
 _KEY_BULLET_RE = re.compile(r"^\s*[-*]\s*`?([a-z][a-z0-9_]{1,40})`?\s*(?:[:—-].*)?$", re.M)
 _KEY_INLINE_RE = re.compile(r"`([a-z][a-z0-9_]{1,40})`\s*=")
+# "The key attacker_ip must hold ..." / "поле first_attack_utc содержит ..."
+_KEY_PROSE_RE = re.compile(r"(?:the\s+)?(?:key|field|ключ|поле)\s+`?([a-z][a-z0-9_]{2,40})`?", re.I)
+# last resort: snake_case identifiers are key names far more often than English words
+_KEY_SNAKE_RE = re.compile(r"(?<![\w/.])([a-z][a-z0-9]*(?:_[a-z0-9]+){1,4})(?![\w/.])")
 _KV_SHAPE_RE = re.compile(
     r"key\s*=\s*value|`[a-z_][a-z0-9_]*`\s*=|one .{0,20}per line|per line|the following keys|these keys|"
     r"with (?:the )?(?:keys|fields)|\bkeys\s*:|(?:exactly )?(?:\d+|two|three|four|five|six|seven|eight)\s+(?:non-empty\s+)?lines|"
@@ -218,9 +222,13 @@ def extract_keys(text: str) -> list:
         return []
     keys = _KEY_INLINE_RE.findall(text)
     if len(keys) < 2:
+        keys = _KEY_PROSE_RE.findall(text)
+    if len(keys) < 2:
         keys = _KEY_BULLET_RE.findall(text)
     if len(keys) < 2:
         keys = re.findall(r"[-*]\s*`([a-z][a-z0-9_]{1,40})`", text)
+    if len(keys) < 2:
+        keys = [k for k in _KEY_SNAKE_RE.findall(text) if not k.endswith(("_log", "_txt", "_json", "_md"))]
     seen, ordered = set(), []
     for k in keys:
         if k not in seen and k not in _KEY_STOPWORDS:

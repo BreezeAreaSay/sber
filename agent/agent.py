@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acpagent import brief, ctf_gate, forensic_seed, kv_seed, oracle, prompts, safefix, sqlfix, tools  # noqa: E402
+from acpagent import brief, ctf_gate, forensic_seed, hardenfix, kv_seed, kv_verify, oracle, prompts, safefix, sqlfix, tools, vulnreport  # noqa: E402
 from acpagent import spec as specmod  # noqa: E402
 from acpagent.llm import (LLM, BudgetExceeded, ContextTooLong, ToolCall, ToolsUnsupported,  # noqa: E402
                           estimate_tokens, parse_arguments)
@@ -72,6 +72,8 @@ class State:
         self.seed = None
         self.seed_conf = {}     # key -> 'high' | 'low' (profile seed only)
         self.seed_partial = None  # high-confidence values for some keys only
+        self.report_seeded = 0    # findings in the draft report written before the model
+        self.report_gaps = []     # weaknesses our own audit found in that draft
         self.final_text = ""
         self.finalized = False
         self.deadline_ts = START_TS + SOFT_DEADLINE_SEC
@@ -269,6 +271,18 @@ def user_prompt(st: State) -> str:
                      + "\n".join(f"{k}={v}" for k, v in st.seed_partial.items() if not k.startswith("_"))
                      + ("\n" + st.seed_partial["_detail"] if st.seed_partial.get("_detail") else ""))
     sp = st.spec
+    if st.report_seeded:
+        note = (f"A COMPLETE DRAFT REPORT has already been written to {sp.deliverable} by an automated scan of the "
+                f"code ({st.report_seeded} findings, most severe first). Read it FIRST with read_file. Your job is to "
+                "improve it, not to start over:\n"
+                "- verify each finding against the real code and correct anything inaccurate;\n"
+                "- ADD the vulnerabilities a pattern scan cannot see: missing authentication/authorization (IDOR), "
+                "mass assignment, information disclosure in responses or logs, insecure defaults, weak session or "
+                "token handling, business-logic flaws;\n"
+                "- never delete a finding that is correct, and keep the same JSON shape.")
+        if st.report_gaps:
+            note += "\nOur own audit of the draft flagged: " + "; ".join(st.report_gaps)
+        parts.append(note)
     if sp.kind == "kv_report" and sp.deliverable:
         parts.append(f"REMINDER: the graded file is {sp.deliverable} with exactly these keys: {', '.join(sp.keys)}.")
     elif sp.deliverable:
@@ -479,6 +493,16 @@ def mechanical_sql_fix(st: State) -> bool:
     originals, notes = safefix.apply(st.workdir)
     if _verify_stage(st, "safefix", originals, notes, safefix):
         kept.extend(notes)
+    # Path traversal / signature checks: try the strict containment check first; if the
+    # project's tests reject it (they exercise sub-directories, say), fall back to the
+    # gentler rewrite. _verify_stage has already reverted before the second attempt.
+    originals, notes = hardenfix.apply(st.workdir)
+    if _verify_stage(st, "hardenfix", originals, notes, hardenfix):
+        kept.extend(notes)
+    elif originals:
+        originals, notes = hardenfix.apply_basename(st.workdir)
+        if _verify_stage(st, "hardenfix(basename)", originals, notes, hardenfix):
+            kept.extend(notes)
     if not kept:
         return False
     st.tests_passed = True
@@ -866,14 +890,23 @@ def run(st: State):
                 # nothing violates the format/derivation checks, the answer is fully determined
                 # by code — a very weak model can only corrupt it, so finish here (0 tokens).
                 if not os.environ.get("LOCAL_AGENT_ALWAYS_MODEL") and all(conf.get(k) == "high" for k in sp.keys):
-                    problems = oracle.kv_constraints({k: seed[k] for k in sp.keys}, sp.keys,
-                                                     sp.evidence_dir or str(st.workdir), st.instruction)
+                    values = {k: seed[k] for k in sp.keys}
+                    root_dir = sp.evidence_dir or str(st.workdir)
+                    problems = oracle.kv_constraints(values, sp.keys, root_dir, st.instruction)
+                    # Second, independent derivation: kv_verify re-reads the raw files with its
+                    # own parsing and counting, so a bug in the profile pipeline cannot confirm
+                    # itself. Only two agreeing implementations may skip the model.
+                    disagree = kv_verify.verify(root_dir, sp.keys, st.instruction, values)
                     okk, _ = oracle.check_kv(sp.deliverable, sp.keys)
-                    if okk and not problems:
-                        log("forensics solved deterministically: all keys high-confidence and consistent (0 tokens)")
+                    if okk and not problems and not disagree:
+                        log("forensics solved deterministically: high confidence, constraints and an "
+                            "independent recomputation all agree (0 tokens)")
                         return
                     if problems:
                         log("profile seed kept as a hint (constraint check flagged: " + "; ".join(problems)[:200] + ")")
+                    if disagree:
+                        log("profile seed kept as a hint (independent recomputation disagrees: "
+                            + "; ".join(disagree)[:240] + ")")
             else:
                 hints = {k: seed[k] for k in sp.keys if k in seed and conf.get(k) == "high"}
                 if hints:
@@ -897,6 +930,20 @@ def run(st: State):
     st.brief = brief.build(sp, st.workdir, log=log)
     log(f"briefing: {len(st.brief.get('text', ''))} chars, {len(st.brief.get('hotspots') or [])} hotspots, "
         f"{len(st.brief.get('routes') or [])} routes")
+    if sp.kind == "json_report" and sp.deliverable:
+        # A complete, code-derived report exists before the first model call, so the task
+        # already has a valid graded artifact and the model only has to improve it.
+        try:
+            report, notes = vulnreport.build(sp, st.workdir, st.brief.get("hotspots"), st.brief.get("routes"))
+            if notes["n"]:
+                vulnreport.write(sp.deliverable, report)
+                st.report_seeded = notes["n"]
+                st.report_gaps = vulnreport.self_check(report, sp.json_root, st.instruction)
+                log(f"draft report written: {notes['n']} findings ({notes['scan']} from the code scan, "
+                    f"{notes['heuristic']} from the route map)"
+                    + ("; own audit flags: " + "; ".join(st.report_gaps) if st.report_gaps else "; own audit: complete"))
+        except Exception as exc:  # noqa: BLE001
+            log(f"draft report failed: {exc}")
     if sp.kind == "ctf" and sp.deliverable and not os.environ.get("LOCAL_AGENT_ALWAYS_MODEL"):
         try:
             gate_root = Path(sp.evidence_dir) if sp.evidence_dir else st.workdir
