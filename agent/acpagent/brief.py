@@ -255,6 +255,40 @@ def data_heads(root: Path, max_files: int = 40, head_lines: int = 4, line_chars:
     return "\n".join(out)
 
 
+def binary_strings(root: Path, max_files: int = 12) -> str:
+    """Interesting printable strings from binaries and captures, for the CTF briefing."""
+    out = []
+    for p in iter_files(Path(root), limit=200):
+        try:
+            if p.stat().st_size > 20_000_000:
+                continue
+            with p.open("rb") as fh:
+                head = fh.read(4096)
+            if b"\x00" not in head:
+                continue
+            data = p.read_bytes()
+        except OSError:
+            continue
+        rel = os.path.relpath(p, root)
+        if data[:4] in (b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d", b"\x0a\x0d\x0d\x0a"):
+            try:
+                from acpagent import digest as _dg
+                d, _ = _dg.pcap_digest(p)
+                if d:
+                    out.append(f"## {rel} (packet capture)\n{d[:1800]}")
+            except Exception:  # noqa: BLE001
+                pass
+            continue
+        runs = [m.group(0).decode("ascii", "replace") for m in re.finditer(rb"[\x20-\x7e]{8,}", data[:3_000_000])]
+        interesting = [s for s in runs if re.search(r"flag|key|pass|secret|usage|enter|correct|wrong|http|\{|decode|encrypt|base64|xor", s, re.I)]
+        sample = interesting[:25] or runs[:15]
+        if sample:
+            out.append(f"## {rel} ({_file_type(p)}): strings of interest\n  " + "\n  ".join(s[:140] for s in sample))
+        if len(out) >= max_files:
+            break
+    return "\n".join(out)
+
+
 def _file_type(p: Path) -> str:
     try:
         r = subprocess.run(["file", "-b", str(p)], capture_output=True, text=True, timeout=10)
@@ -300,6 +334,20 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
             continue
         rel = os.path.relpath(p, root)
         consider(data, rel)
+        if data[:4] in (b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d", b"\x0a\x0d\x0d\x0a"):
+            try:
+                from acpagent import digest as _dg
+                _, payloads = _dg.pcap_digest(p)
+                consider(payloads, f"{rel} (packet payloads)")
+                for m in _B64_RE.finditer(payloads):
+                    chunk = m.group(0)
+                    if len(chunk) <= 20000:
+                        try:
+                            consider(base64.b64decode(chunk + b"=" * (-len(chunk) % 4), validate=False), f"{rel} (payload base64)")
+                        except Exception:  # noqa: BLE001
+                            pass
+            except Exception:  # noqa: BLE001
+                pass
         try:
             consider(codecs.encode(data.decode("latin-1"), "rot13").encode("latin-1"), f"{rel} (rot13)")
         except Exception:  # noqa: BLE001
@@ -536,6 +584,9 @@ def build(spec, workdir: Path, log=print) -> dict:
         log(f"[brief] data digest failed: {exc}")
     try:
         if kind == "ctf":
+            bs = binary_strings(Path(spec.evidence_dir) if spec.evidence_dir else workdir)
+            if bs:
+                sections.append("Binary files / captures (strings of interest):\n" + bs[:5000])
             cands = flag_candidates(workdir, spec.flag_prefix)
             info["flags"] = cands
             if cands:

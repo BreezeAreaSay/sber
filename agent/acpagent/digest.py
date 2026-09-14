@@ -135,6 +135,12 @@ def digest_dir(root: Path) -> str:
         except OSError:
             continue
         if b"\x00" in head:
+            if head[:4] in (b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d", b"\x0a\x0d\x0d\x0a"):
+                d, _ = pcap_digest(p)
+                if d:
+                    block = f"## {os.path.relpath(p, root)} (packet capture)\n{d[:PER_FILE_CHARS * 2]}"
+                    parts.append(block)
+                    total += len(block)
             continue
         d = digest_file(p)
         if not d:
@@ -145,3 +151,142 @@ def digest_dir(root: Path) -> str:
         if total > TOTAL_CHARS:
             break
     return "\n".join(parts)
+
+
+# ---- pcap / pcapng --------------------------------------------------------------------------
+
+import struct
+
+_PRINTABLE_RUN = re.compile(rb"[\x20-\x7e]{6,}")
+
+
+def _iter_pcap_packets(data: bytes):
+    """Yield raw link-layer frames from a pcap or pcapng buffer (best effort)."""
+    if len(data) < 24:
+        return
+    magic = data[:4]
+    if magic in (b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d"):
+        little = magic in (b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1")
+        end = "<" if little else ">"
+        linktype = struct.unpack(end + "I", data[20:24])[0]
+        off = 24
+        n = 0
+        while off + 16 <= len(data) and n < 200_000:
+            _, _, incl, _ = struct.unpack(end + "IIII", data[off:off + 16])
+            off += 16
+            yield linktype, data[off:off + incl]
+            off += incl
+            n += 1
+        return
+    if magic == b"\x0a\x0d\x0d\x0a":  # pcapng
+        off = 0
+        little = True
+        linktype = 1
+        n = 0
+        while off + 12 <= len(data) and n < 200_000:
+            btype = struct.unpack("<I", data[off:off + 4])[0]
+            if btype == 0x0A0D0D0A:
+                bom = data[off + 8:off + 12]
+                little = bom == b"\x4d\x3c\x2b\x1a"
+            end = "<" if little else ">"
+            blen = struct.unpack(end + "I", data[off + 4:off + 8])[0]
+            if blen < 12 or off + blen > len(data):
+                break
+            if btype == 0x00000001:  # interface description
+                linktype = struct.unpack(end + "H", data[off + 8:off + 10])[0]
+            elif btype == 0x00000006:  # enhanced packet block
+                caplen = struct.unpack(end + "I", data[off + 20:off + 24])[0]
+                yield linktype, data[off + 28:off + 28 + caplen]
+                n += 1
+            elif btype == 0x00000003:  # simple packet block
+                plen = struct.unpack(end + "I", data[off + 8:off + 12])[0]
+                yield linktype, data[off + 12:off + 12 + plen]
+                n += 1
+            off += blen
+        return
+
+
+def _parse_ip(frame: bytes, linktype: int):
+    """Return (src, dst, proto, sport, dport, payload) or None."""
+    if linktype == 1:  # ethernet
+        if len(frame) < 14:
+            return None
+        et = struct.unpack("!H", frame[12:14])[0]
+        off = 14
+        if et == 0x8100 and len(frame) >= 18:
+            et = struct.unpack("!H", frame[16:18])[0]
+            off = 18
+        if et != 0x0800:
+            return None
+    elif linktype == 101:  # raw ip
+        off = 0
+    elif linktype == 113:  # linux cooked
+        if len(frame) < 16 or struct.unpack("!H", frame[14:16])[0] != 0x0800:
+            return None
+        off = 16
+    else:
+        return None
+    ip = frame[off:]
+    if len(ip) < 20 or ip[0] >> 4 != 4:
+        return None
+    ihl = (ip[0] & 0x0F) * 4
+    proto = ip[9]
+    src = ".".join(str(b) for b in ip[12:16])
+    dst = ".".join(str(b) for b in ip[16:20])
+    tp = ip[ihl:]
+    sport = dport = 0
+    payload = b""
+    if proto == 6 and len(tp) >= 20:
+        sport, dport = struct.unpack("!HH", tp[:4])
+        doff = (tp[12] >> 4) * 4
+        payload = tp[doff:]
+    elif proto == 17 and len(tp) >= 8:
+        sport, dport = struct.unpack("!HH", tp[:4])
+        payload = tp[8:]
+    return src, dst, proto, sport, dport, payload
+
+
+def pcap_digest(path: Path, max_bytes: int = 60_000_000):
+    """Summary text for a capture file plus the printable payload strings (for flag scans)."""
+    try:
+        if path.stat().st_size > max_bytes:
+            return "", b""
+        data = path.read_bytes()
+    except OSError:
+        return "", b""
+    flows = Counter()
+    talkers = Counter()
+    protos = Counter()
+    strings = []
+    total = 0
+    payload_blob = []
+    for linktype, frame in _iter_pcap_packets(data):
+        total += 1
+        parsed = _parse_ip(frame, linktype)
+        if not parsed:
+            continue
+        src, dst, proto, sport, dport, payload = parsed
+        pname = {6: "tcp", 17: "udp", 1: "icmp"}.get(proto, str(proto))
+        protos[pname] += 1
+        talkers[src] += 1
+        flows[f"{src} -> {dst}:{dport}/{pname}"] += 1
+        if payload:
+            payload_blob.append(payload)
+            for m in _PRINTABLE_RUN.finditer(payload[:2000]):
+                s = m.group(0).decode("ascii", "replace")
+                if re.search(r"flag|key|pass|user|login|token|secret|GET |POST |HTTP/|Host:|Authorization|Cookie|ctf|\{", s, re.I):
+                    strings.append(s[:160])
+    if not total:
+        return "", b""
+    out = [f"capture: {total} packets; protocols: {_top(protos, 5)}",
+           f"top talkers: {_top(talkers, 8)}",
+           f"top flows: {_top(flows, 10)}"]
+    uniq = []
+    seen = set()
+    for s in strings:
+        if s not in seen:
+            seen.add(s)
+            uniq.append(s)
+    if uniq:
+        out.append("interesting payload strings:\n  " + "\n  ".join(uniq[:30]))
+    return "\n".join(out), b"\n".join(payload_blob)[:5_000_000]
