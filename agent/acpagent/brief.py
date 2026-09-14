@@ -559,6 +559,12 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
                         consider(fh.read(3_000_000), f"{os.path.relpath(p, root)} (decompressed)")
                 except Exception:  # noqa: BLE001
                     pass
+            elif low.endswith((".db", ".sqlite", ".sqlite3", ".db3")) or _is_sqlite(p):
+                consider(_sqlite_text(p), f"{os.path.relpath(p, root)} (sqlite contents)")
+            elif low.endswith(".pdf"):
+                consider(_pdf_text(p), f"{os.path.relpath(p, root)} (pdf streams)")
+            elif low.endswith(".png"):
+                consider(_png_lsb(p), f"{os.path.relpath(p, root)} (png LSB stego)")
         git_dir = Path(root) / ".git"
         if git_dir.is_dir():
             try:
@@ -594,6 +600,123 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
 
 _STR_LIT_RE = re.compile(r"""(?<![\w])(?:[rRbBuU]?)(['"])((?:\\.|(?!\1).){3,64})\1""")
 _LIST_LIT_RE = re.compile(r'''\[((?:\s*['"][^'"]{1,32}['"]\s*,?){2,12})\]''')
+
+
+def _is_sqlite(p: Path) -> bool:
+    try:
+        with p.open("rb") as fh:
+            return fh.read(16).startswith(b"SQLite format 3")
+    except OSError:
+        return False
+
+
+def _sqlite_text(p: Path) -> bytes:
+    """Every text value in every table — flags hide in databases as often as in files."""
+    import sqlite3
+    out = []
+    try:
+        con = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=5)
+        cur = con.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
+        for (name,) in cur.fetchall()[:60]:
+            try:
+                cur.execute(f'SELECT * FROM "{name}" LIMIT 2000')
+            except Exception:  # noqa: BLE001
+                continue
+            for row in cur.fetchall():
+                for v in row:
+                    if isinstance(v, (str, bytes)):
+                        out.append(v.encode("utf-8", "replace") if isinstance(v, str) else v)
+        con.close()
+    except Exception:  # noqa: BLE001
+        return b""
+    return b"\n".join(out)[:3_000_000]
+
+
+def _pdf_text(p: Path) -> bytes:
+    """Raw plus inflated stream contents of a PDF (no external dependency)."""
+    import zlib
+    try:
+        data = p.read_bytes()[:20_000_000]
+    except OSError:
+        return b""
+    out = [data]
+    for m in re.finditer(rb"stream\r?\n(.*?)endstream", data, re.S):
+        chunk = m.group(1)
+        try:
+            out.append(zlib.decompress(chunk))
+        except Exception:  # noqa: BLE001
+            continue
+    return b"\n".join(out)[:3_000_000]
+
+
+def _png_lsb(p: Path) -> bytes:
+    """Least-significant-bit payload of a PNG, read with zlib alone."""
+    import zlib
+    try:
+        data = p.read_bytes()
+        if not data.startswith(b"\x89PNG"):
+            return b""
+        width = height = 0
+        idat = bytearray()
+        bitdepth = colour = 0
+        i = 8
+        while i + 8 <= len(data):
+            ln = int.from_bytes(data[i:i + 4], "big")
+            typ = data[i + 4:i + 8]
+            body = data[i + 8:i + 8 + ln]
+            if typ == b"IHDR":
+                width = int.from_bytes(body[0:4], "big")
+                height = int.from_bytes(body[4:8], "big")
+                bitdepth, colour = body[8], body[9]
+            elif typ == b"IDAT":
+                idat += body
+            elif typ == b"IEND":
+                break
+            i += 12 + ln
+        if not idat or bitdepth != 8 or colour not in (2, 6) or width * height > 4_000_000:
+            return b""
+        raw = zlib.decompress(bytes(idat))
+        chan = 3 if colour == 2 else 4
+        stride = width * chan
+        bits = []
+        pos = 0
+        prev = bytearray(stride)
+        for _ in range(height):
+            if pos >= len(raw):
+                break
+            ftype = raw[pos]; pos += 1
+            line = bytearray(raw[pos:pos + stride]); pos += stride
+            if len(line) < stride:
+                break
+            for x in range(stride):
+                a = line[x - chan] if x >= chan else 0
+                b = prev[x]
+                c = prev[x - chan] if x >= chan else 0
+                if ftype == 1:
+                    line[x] = (line[x] + a) & 0xFF
+                elif ftype == 2:
+                    line[x] = (line[x] + b) & 0xFF
+                elif ftype == 3:
+                    line[x] = (line[x] + ((a + b) >> 1)) & 0xFF
+                elif ftype == 4:
+                    pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                    pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                    line[x] = (line[x] + pr) & 0xFF
+            for x in range(stride):
+                if chan == 4 and x % 4 == 3:
+                    continue  # skip alpha
+                bits.append(line[x] & 1)
+            prev = line
+        out = bytearray()
+        for j in range(0, len(bits) - 7, 8):
+            byte = 0
+            for k in range(8):
+                byte = (byte << 1) | bits[j + k]
+            out.append(byte)
+        return bytes(out)[:200_000]
+    except Exception:  # noqa: BLE001
+        return b""
 
 
 def _string_constants(root: Path, max_files: int = 60):
