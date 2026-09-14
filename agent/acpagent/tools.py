@@ -210,20 +210,21 @@ def str_replace(path, old, new, workdir: Path) -> str:
         return f"[error] {exc}"
     count = body.count(old)
     if count == 0:
-        # Second chance: ignore trailing whitespace differences per line.
-        nb, no = _normalise_ws(body), _normalise_ws(old)
-        if no and nb.count(no) == 1:
-            idx = nb.find(no)
-            # map back by rebuilding the file from the normalised version: safe because
-            # only trailing whitespace was removed.
-            body2 = nb[:idx] + _normalise_ws(new) + nb[idx + len(no):]
+        # Second chance: small models collapse line breaks and indentation when they
+        # copy a snippet. Match on whitespace-normalised text and map the hit back to
+        # the original span, so the file keeps its own layout around the edit.
+        span = _fuzzy_span(body, old)
+        if span is not None:
+            start, end = span
+            body2 = body[:start] + new + body[end:]
             try:
                 with fp.open("w", encoding="utf-8", newline="") as stream:
                     stream.write(body2)
             except Exception as exc:  # noqa: BLE001
                 return f"[error] {exc}"
             warn = post_write_check(fp)
-            return f"Replaced 1 occurrence in {fp} (matched ignoring trailing whitespace)." + (f"\n{warn}" if warn else "")
+            return (f"Replaced 1 occurrence in {fp} (matched ignoring whitespace differences; "
+                    f"re-read the file to confirm the layout)." + (f"\n{warn}" if warn else ""))
         hint = _closest_snippet(body, old)
         return (f"[error] old_str not found in {fp}. It must match the file text exactly "
                 f"(same indentation and line breaks). Closest text in the file:\n{hint}")
@@ -236,6 +237,29 @@ def str_replace(path, old, new, workdir: Path) -> str:
         return f"[error] {exc}"
     warn = post_write_check(fp)
     return f"Replaced 1 occurrence in {fp}." + (f"\n{warn}" if warn else "")
+
+
+_WS_RE = re.compile(r"\s+")
+
+
+def _fuzzy_span(body: str, old: str):
+    """Locate `old` in `body` ignoring all whitespace; return the original span or None."""
+    norm_chars = []
+    index_map = []  # normalised index -> original index
+    for i, ch in enumerate(body):
+        if not ch.isspace():
+            norm_chars.append(ch)
+            index_map.append(i)
+    norm_body = "".join(norm_chars)
+    norm_old = _WS_RE.sub("", old)
+    if len(norm_old) < 8:
+        return None
+    first = norm_body.find(norm_old)
+    if first < 0 or norm_body.find(norm_old, first + 1) >= 0:
+        return None
+    start = index_map[first]
+    end = index_map[first + len(norm_old) - 1] + 1
+    return start, end
 
 
 def _closest_snippet(body: str, needle: str) -> str:

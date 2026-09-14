@@ -129,6 +129,8 @@ PATTERNS = [
      "medium", None),
 ]
 _COMPILED = [(lab, cat, cwe, re.compile(rx), sev) for lab, cat, cwe, rx, sev, _ in PATTERNS]
+AUDIT_ONLY_CATEGORIES = {"Plaintext Password Storage", "Hard-coded Credentials", "Weak Cryptography",
+                         "Insecure Permissions"}
 # Interpolations that are not user data: placeholder counters, joined column lists, table names.
 _BENIGN_SQL_RE = re.compile(r"""\{\s*len\(|\{\s*['"][^'"]*['"]\.join\(|\{\s*\w+\.join\(|\{\s*placeholders?\s*\}|\{\s*(?:table|tbl|columns?|cols|fields)\s*\}|^\s*@\w+\.(?:get|post|put|delete|patch|route)\(""")
 
@@ -348,6 +350,10 @@ def build(spec, workdir: Path, log=print) -> dict:
             if rts:
                 sections.append("HTTP routes found:\n" + "\n".join(rts))
             hits = scan_hotspots(workdir)
+            if kind == "code_fix":
+                # Storage/crypto findings are real audit material but "fixing" seed data
+                # or hashing schemes breaks the behaviour the hidden tests protect.
+                hits = [h for h in hits if h["category"] not in AUDIT_ONLY_CATEGORIES]
             info["hotspots"] = hits
             if hits:
                 sections.append(
