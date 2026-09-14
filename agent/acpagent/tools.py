@@ -216,7 +216,7 @@ def str_replace(path, old, new, workdir: Path) -> str:
         span = _fuzzy_span(body, old)
         if span is not None:
             start, end = span
-            body2 = body[:start] + new + body[end:]
+            body2 = body[:start] + _reindent(body, start, new) + body[end:]
             try:
                 with fp.open("w", encoding="utf-8", newline="") as stream:
                     stream.write(body2)
@@ -260,6 +260,26 @@ def _fuzzy_span(body: str, old: str):
     start = index_map[first]
     end = index_map[first + len(norm_old) - 1] + 1
     return start, end
+
+
+def _reindent(body: str, start: int, new: str) -> str:
+    """Re-indent a replacement whose snippet matched only modulo whitespace.
+
+    The model's copy of the block carried the wrong indentation, so its replacement
+    does too. Strip the replacement's common indentation and re-apply the indentation
+    of the line the match starts on, keeping the block's relative structure.
+    """
+    import textwrap
+    line_start = body.rfind("\n", 0, start) + 1
+    prefix = body[line_start:start]
+    indent = prefix if prefix.strip() == "" else re.match(r"[ \t]*", body[line_start:]).group(0)
+    lines = textwrap.dedent(new.replace("\r\n", "\n")).split("\n")
+    if not lines:
+        return new
+    out = [lines[0].lstrip(" \t") if prefix.strip() == "" else lines[0]]
+    for ln in lines[1:]:
+        out.append((indent + ln) if ln.strip() else ln)
+    return "\n".join(out)
 
 
 def _closest_snippet(body: str, needle: str) -> str:
