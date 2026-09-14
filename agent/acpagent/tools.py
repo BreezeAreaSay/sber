@@ -31,6 +31,9 @@ def _remember_original(fp):
 DEFAULT_BASH_TIMEOUT = 120
 MAX_BASH_TIMEOUT = 240
 BINARY_SNIFF = 4096
+_CODE_SUFFIXES = {".py", ".js", ".ts", ".tsx", ".jsx", ".php", ".rb", ".go", ".java", ".cs", ".rs", ".c", ".cc",
+                  ".cpp", ".h", ".hpp", ".sh", ".html", ".htm", ".sql", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+                  ".md", ".txt", ".env", ".conf", ".xml", ".json"}
 
 
 def truncate(text: str, limit: int = MAX_TOOL_OUTPUT_CHARS) -> str:
@@ -142,6 +145,13 @@ def read_file(path, workdir: Path, offset=None, limit=None) -> str:
         return note + truncate(body, MAX_TOOL_OUTPUT_CHARS * 2)
     if len(text) <= MAX_TOOL_OUTPUT_CHARS:
         return text
+    if fp.suffix.lower() not in _CODE_SUFFIXES and len(text) > 20000:
+        # Big logs / CSV / JSONL tokenize expensively and are rarely useful in full:
+        # show the shape and point at grep/awk/python or paging instead.
+        head = "\n".join(lines[:40])[:3000]
+        return (f"[{fp}: large data file, {total} lines, {len(text)} chars. Showing the first lines only. "
+                f"Use bash (grep -n / awk / sort | uniq -c / a python3 script) to extract what you need, "
+                f"or read_file with offset/limit for a specific range.]\n{head}")
     head_lines = []
     used = 0
     for ln in lines:
