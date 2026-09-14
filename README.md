@@ -13,6 +13,15 @@ third-party dependencies, so nothing can be missing in the `secureintelligent/ac
    - exact-content files (one or several);
    - the structured exfiltration-forensics family (`forensic_seed.py`, mirrors the normative
      field mapping of the statement; used as a hint to the model otherwise);
+   - **generic key=value forensics seed** (`kv_seed.py`): the statement's own words next to
+     each key (`attacker_ip`, `first_success_utc`, "failed before the first successful login",
+     "the first traversal request that returned HTTP 200", "without the query string" …) are
+     mapped onto the structured log profiles — the suspect is the client with the attack
+     payloads the statement names (or the source that succeeded after failing), timestamps are
+     converted to UTC from the file's time zone, counts are computed by code. The answer file is
+     written before the model runs (so a wandering model still leaves the best answer), shown to
+     the model with each value's source line, and counts as one vote in the final per-key
+     majority. Russian statements are understood through cue-word mapping.
    - **mechanical SQL parameterization** (`sqlfix.py`): SQL built with f-strings, `%`,
      `.format()` or `+` concatenation → bound parameters (asyncpg / psycopg / sqlite styles),
      including the `conditions.append(f"...")` idiom; kept only if the code compiles, the app

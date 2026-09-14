@@ -149,9 +149,10 @@ def utc_note(text: str, tz, label, year) -> str:
 
 # ---- SSH / auth logs -----------------------------------------------------------------------
 
-def auth_profile(lines, tz, label, year, max_rows: int = 8):
+def auth_facts(lines, tz, label, year):
+    """Structured per-IP facts of an sshd/auth log (the text profile and the answer seed
+    are both built from this)."""
     per_ip = {}
-    per_user = Counter()
     accepted_lines = []
     order = 0
     for ln in lines:
@@ -172,9 +173,14 @@ def auth_profile(lines, tz, label, year, max_rows: int = 8):
             continue
         order += 1
         rec = per_ip.setdefault(ip, {"failed": 0, "accepted_pw": 0, "accepted_key": 0, "first_accept": None,
-                                     "failed_before": 0, "users": Counter(), "invalid": 0})
+                                     "failed_before": 0, "users": Counter(), "invalid": 0, "lines": [],
+                                     "first_failed": None, "first": None, "last": None})
+        rec["lines"].append(ln)
+        rec["first"] = rec["first"] or ln
+        rec["last"] = ln
         if kind.startswith("Failed"):
             rec["failed"] += 1
+            rec["first_failed"] = rec["first_failed"] or ln
             if rec["first_accept"] is None:
                 rec["failed_before"] += 1
             if user:
@@ -184,14 +190,21 @@ def auth_profile(lines, tz, label, year, max_rows: int = 8):
                 rec["accepted_key"] += 1
             else:
                 rec["accepted_pw"] += 1
-            if rec["first_accept"] is None or ("publickey" in rec["first_accept"][2] and "publickey" not in kind):
-                if rec["first_accept"] is None:
-                    rec["first_accept"] = (ln, user, kind, order)
-            if user:
-                per_user[(user, ip, kind)] += 1
+            if rec["first_accept"] is None:
+                rec["first_accept"] = (ln, user, kind, order)
+            if "publickey" not in kind and rec.get("first_accept_pw") is None:
+                rec["first_accept_pw"] = (ln, user, kind, order)
             accepted_lines.append(ln)
         elif kind == "Invalid user":
             rec["invalid"] += 1
+    for rec in per_ip.values():
+        rec.setdefault("first_accept_pw", None)
+    return {"per_ip": per_ip, "accepted": accepted_lines, "tz": tz, "label": label, "year": year}
+
+
+def auth_profile(lines, tz, label, year, max_rows: int = 8):
+    facts = auth_facts(lines, tz, label, year)
+    per_ip, accepted_lines = facts["per_ip"], facts["accepted"]
     if not per_ip:
         return ""
     rows = sorted(per_ip.items(), key=lambda kv: (-(kv[1]["failed"] + kv[1]["invalid"]), -kv[1]["accepted_pw"], kv[0]))
@@ -222,7 +235,8 @@ def auth_profile(lines, tz, label, year, max_rows: int = 8):
 
 # ---- web / proxy access logs ---------------------------------------------------------------
 
-def access_profile(lines, tz, label, year, max_rows: int = 8):
+def access_facts(lines, tz, label, year):
+    """Structured per-client facts of a CLF/nginx/apache/proxy access log."""
     per_ip = {}
     xff_clients = Counter()
     suspicious_lines = []
@@ -232,8 +246,12 @@ def access_profile(lines, tz, label, year, max_rows: int = 8):
             continue
         ip = m.group("ip")
         rec = per_ip.setdefault(ip, {"n": 0, "err": 0, "sus": 0, "first": None, "last": None, "paths": Counter(), "bytes": 0,
-                                     "users": Counter(), "first_sus": None, "first_sus_ok": None, "severe": 0})
+                                     "users": Counter(), "first_sus": None, "first_sus_ok": None, "severe": 0, "lines": [],
+                                     "parsed": []})
         rec["n"] += 1
+        rec["lines"].append(ln)
+        rec["parsed"].append({"method": m.group("method"), "path": m.group("path"), "status": m.group("status"),
+                              "size": m.group("size"), "line": ln})
         if m.group("status")[0] in ("4", "5"):
             rec["err"] += 1
         if _SUSPICIOUS.search(m.group("path")) or _SUSPICIOUS.search(ln):
@@ -259,6 +277,12 @@ def access_profile(lines, tz, label, year, max_rows: int = 8):
             public = [h for h in chain if _IPV4.fullmatch(h) and not _is_private(h)]
             if public:
                 xff_clients[public[-1]] += 1
+    return {"per_ip": per_ip, "xff": xff_clients, "suspicious": suspicious_lines, "tz": tz, "label": label, "year": year}
+
+
+def access_profile(lines, tz, label, year, max_rows: int = 8):
+    facts = access_facts(lines, tz, label, year)
+    per_ip, xff_clients, suspicious_lines = facts["per_ip"], facts["xff"], facts["suspicious"]
     if not per_ip:
         return ""
     rows = sorted(per_ip.items(), key=lambda kv: (-kv[1]["severe"], -kv[1]["sus"], -kv[1]["n"]))
@@ -395,40 +419,93 @@ def rare_lines(lines, tz, label, year, max_lines: int = 10):
 
 # ---- entry -----------------------------------------------------------------------------------
 
-def profile_file(p: Path, max_chars: int = 2600) -> str:
+def load_logical(p: Path):
+    """(logical lines with continuations joined, tz, label, year, header) of a text file."""
     try:
         if p.stat().st_size > 40_000_000:
-            return ""
+            return None
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return ""
+        return None
     lines = text.splitlines()
     header = "\n".join(ln for ln in lines[:8] if ln.startswith("#"))
     tz, label, year = detect_tz(header)
     if year is None:
         ym = re.search(r"\b(20\d{2})-\d{2}-\d{2}", text[:20000])
         year = int(ym.group(1)) if ym else None
-    parts = []
-    if tz is not None:
-        note = f"time zone of this file: {label}" if label else "time zone: explicit offsets"
-        if year and any(_SYSLOG_RE.match(ln) for ln in lines[:50]):
-            note += f"; syslog lines have no year — year {year} from the header"
-        parts.append(note + ". All '→ UTC' values below were computed from that.")
     logical = []
     for ln in lines:
         if ln[:1] in ("\t", " ") and logical:
             logical[-1] += " " + ln.strip()
         else:
             logical.append(ln)
+    return logical, tz, label, year, header
+
+
+def file_kind(logical, p: Path) -> str:
     if any(" sshd" in ln or "Failed password" in ln or "Accepted " in ln for ln in logical[:400]):
+        return "auth"
+    if any(_CLF_RE.match(ln) for ln in logical[:50]):
+        return "access"
+    if p.suffix.lower() in (".jsonl", ".ndjson") or (logical and logical[0].lstrip().startswith("{")):
+        return "jsonl"
+    return "other"
+
+
+def file_facts(p: Path):
+    """Structured facts of one evidence file (None when it is not a recognised log)."""
+    loaded = load_logical(p)
+    if loaded is None:
+        return None
+    logical, tz, label, year, header = loaded
+    kind = file_kind(logical, p)
+    if kind == "auth":
+        facts = auth_facts(logical, tz, label, year)
+    elif kind == "access":
+        facts = access_facts(logical, tz, label, year)
+    else:
+        return None
+    facts.update({"path": p, "kind": kind, "lines": logical})
+    return facts
+
+
+def dir_facts(root: Path, limit_files: int = 30):
+    out = []
+    for p in sorted(x for x in Path(root).rglob("*") if x.is_file() and not x.name.startswith("."))[:limit_files]:
+        try:
+            with p.open("rb") as fh:
+                if b"\x00" in fh.read(2048):
+                    continue
+        except OSError:
+            continue
+        f = file_facts(p)
+        if f and f["per_ip"]:
+            out.append(f)
+    return out
+
+
+def profile_file(p: Path, max_chars: int = 2600) -> str:
+    loaded = load_logical(p)
+    if loaded is None:
+        return ""
+    logical, tz, label, year, header = loaded
+    lines = logical
+    parts = []
+    if tz is not None:
+        note = f"time zone of this file: {label}" if label else "time zone: explicit offsets"
+        if year and any(_SYSLOG_RE.match(ln) for ln in lines[:50]):
+            note += f"; syslog lines have no year — year {year} from the header"
+        parts.append(note + ". All '→ UTC' values below were computed from that.")
+    kind = file_kind(logical, p)
+    if kind == "auth":
         t = auth_profile(logical, tz, label, year)
         if t:
             parts.append(t)
-    elif any(_CLF_RE.match(ln) for ln in logical[:50]):
+    elif kind == "access":
         t = access_profile(logical, tz, label, year)
         if t:
             parts.append(t)
-    elif p.suffix.lower() in (".jsonl", ".ndjson") or (logical and logical[0].lstrip().startswith("{")):
+    elif kind == "jsonl":
         rows = []
         for ln in logical[:200_000]:
             ln = ln.strip()

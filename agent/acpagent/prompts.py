@@ -41,7 +41,9 @@ When all tests pass and every vulnerability is fixed, reply DONE.
 FORENSICS = """
 TASK TYPE: log forensics / incident analysis. The answer must be derived from the evidence files, copied exactly.
 The context already contains DETERMINISTIC PROFILES computed by code: per-IP/per-account tables (failed vs accepted logins, first success, 'failed before first success'), rare events printed in full, and every timestamp converted to UTC ('→ UTC ...'). They are exact — use them instead of counting yourself.
-Method (do it key by key, in this order):
+If the context contains a PRELIMINARY AUTOMATED ANSWER: it was computed by code and is already in the deliverable. Check each value against its cited source line and the task's definition of that key; if every value is consistent, write the file with exactly those values (one write_file call) and reply DONE — do not re-derive them. Change a value only when the task's definition contradicts it (say which words).
+The profile wording ('first suspicious request', '→ UTC', 'failed before it') is NOT inside the evidence files — never grep for it; grep only for real log content (an IP, a path, 'Failed password').
+Method for keys without a preliminary value (do it key by key, in this order):
 1. For each required key, quote the exact words of the task that define it (e.g. "taken from the `Accepted password` line" means Accepted PASSWORD, not publickey; "before the first successful login" means only the lines preceding that login).
 2. Find the row/line in the profiles that matches that definition. Confirm it with ONE bash command (grep -n / a short python3 heredoc) only if the profiles are ambiguous.
 3. Take the value: entity values (IP, account, request id) verbatim from the log line; timestamps in the form the task demands — when it asks for UTC use the '→ UTC' value (already converted from the file's time zone, same fractional digits); counts as plain integers.

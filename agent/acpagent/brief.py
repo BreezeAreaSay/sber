@@ -678,7 +678,8 @@ def build(spec, workdir: Path, log=print) -> dict:
             prof = profile.profile_dir(root)
             if prof:
                 sections.append("DETERMINISTIC PROFILES (computed by code from the whole files — counts, first/last "
-                                "events and the '→ UTC' conversions are exact; prefer these over your own counting):\n" + prof)
+                                "events and the '→ UTC' conversions are exact; prefer these over your own counting. "
+                                "This summary text is NOT inside the files: grep the files only for real log content):\n" + prof)
             dg = digest.digest_dir(root, max_total=4500)
             if dg:
                 sections.append("Pre-computed facts per file (counts are over the whole file; verify the rare "

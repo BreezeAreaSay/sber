@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acpagent import brief, forensic_seed, oracle, prompts, safefix, sqlfix, tools  # noqa: E402
+from acpagent import brief, ctf_gate, forensic_seed, kv_seed, oracle, prompts, safefix, sqlfix, tools  # noqa: E402
 from acpagent import spec as specmod  # noqa: E402
 from acpagent.llm import (LLM, BudgetExceeded, ContextTooLong, ToolCall, ToolsUnsupported,  # noqa: E402
                           estimate_tokens, parse_arguments)
@@ -70,6 +70,8 @@ class State:
         self.snapshot = {}
         self.servers = []
         self.seed = None
+        self.seed_conf = {}     # key -> 'high' | 'low' (profile seed only)
+        self.seed_partial = None  # high-confidence values for some keys only
         self.final_text = ""
         self.finalized = False
         self.deadline_ts = START_TS + SOFT_DEADLINE_SEC
@@ -254,15 +256,43 @@ def user_prompt(st: State) -> str:
         parts.append("ALREADY FIXED MECHANICALLY (tests pass with these changes; do not redo them):\n"
                      + "\n".join(f"- {n}" for n in st.mechanical_notes))
     if st.seed:
-        parts.append("PRELIMINARY AUTOMATED CORRELATION (may be wrong — verify against the evidence, then write the "
-                     "final file yourself):\n" + "\n".join(f"{k}={v}" for k, v in st.seed.items() if not k.startswith("_"))
+        def _tag(k):
+            c = st.seed_conf.get(k)
+            return "" if not c else ("   <- matches the task's definition literally" if c == "high" else "   <- a default reading; verify this one")
+        parts.append("PRELIMINARY AUTOMATED ANSWER (computed by code from the evidence; already written to the deliverable; "
+                     "each value cites its source line below — confirm every value against the task's definition, correct "
+                     "only what contradicts it):\n" + "\n".join(f"{k}={v}{_tag(k)}" for k, v in st.seed.items() if not k.startswith("_"))
                      + ("\n" + st.seed["_detail"] if st.seed.get("_detail") else ""))
+    elif st.seed_partial:
+        parts.append("PARTIAL PRELIMINARY VALUES (computed by code; only these keys could be derived mechanically — the "
+                     "remaining keys are yours to derive from the profiles):\n"
+                     + "\n".join(f"{k}={v}" for k, v in st.seed_partial.items() if not k.startswith("_"))
+                     + ("\n" + st.seed_partial["_detail"] if st.seed_partial.get("_detail") else ""))
     sp = st.spec
     if sp.kind == "kv_report" and sp.deliverable:
         parts.append(f"REMINDER: the graded file is {sp.deliverable} with exactly these keys: {', '.join(sp.keys)}.")
     elif sp.deliverable:
         parts.append(f"REMINDER: the graded file is {sp.deliverable}.")
     return "\n\n".join(parts)
+
+
+_QUOTED_RE = re.compile(r"""['"]([^'"\n]{6,80})['"]""")
+_PROFILE_WORDS = ("suspicious", "profile", "first success", "failed before", "accepted (successful", "→ utc", "severe",
+                  "first request", "last request", "top:", "rare", "per client", "per source", "answered 2xx")
+
+
+def _profile_phrase(command: str, brief_text: str):
+    """A quoted search phrase that exists only in the briefing (profile wording), if any."""
+    if "grep" not in command and "rg " not in command and "awk" not in command:
+        return None
+    low_brief = brief_text.lower()
+    for phrase in _QUOTED_RE.findall(command):
+        lp = phrase.lower().strip()
+        if len(lp) < 6 or any(ch in lp for ch in "\\[]()|*^$"):
+            continue
+        if lp in low_brief and any(w in lp for w in _PROFILE_WORDS):
+            return phrase
+    return None
 
 
 # ---- oracle dispatch -----------------------------------------------------------------------
@@ -615,6 +645,12 @@ def run_loop(st: State):
                 if seen and (not sp.flag_prefix or seen.startswith(sp.flag_prefix)) and seen not in st.seen_flags:
                     st.seen_flags.append(seen)
                     log(f"flag-shaped string seen in tool output: {seen}")
+            if c.name == "bash" and sp.kind in ("kv_report", "generic") and (result.startswith("[exit 1]") or result.startswith("[exit 2]")):
+                phrase = _profile_phrase(str(c.arguments.get("command", "")), st.brief.get("text", ""))
+                if phrase:
+                    result += (f"\n[hint] '{phrase}' is wording from the automatically computed profile in your context, "
+                               "not text inside the evidence files. The profile's numbers, lines and '→ UTC' values were "
+                               "computed by code from the whole file — use them directly instead of searching for them.")
             preview = result.replace("\n", " ")[:160]
             st.call_history.append((c.name, json.dumps(c.arguments, ensure_ascii=False)[:200]))
             log(f"  {c.name}({json.dumps(c.arguments, ensure_ascii=False)[:150]}) -> {preview}")
@@ -814,6 +850,35 @@ def run(st: State):
                 if ok:
                     log("forensic task solved deterministically (0 tokens)")
                     return
+    if sp.kind == "kv_report" and not st.seed and sp.deliverable:
+        root = sp.evidence_dir or str(st.workdir)
+        try:
+            seed, conf = kv_seed.solve(root, sp.keys, st.instruction)
+        except Exception as exc:  # noqa: BLE001
+            seed, conf = None, {}
+            log(f"profile seed failed: {exc}")
+        if seed:
+            if all(k in seed for k in sp.keys):
+                st.seed, st.seed_conf = seed, conf
+                oracle.write_kv(sp.deliverable, seed, sp.keys)
+                log("profile seed written: " + ", ".join(f"{k}={seed[k]} ({conf.get(k)})" for k in sp.keys))
+                # When every value matched the statement's own wording (high confidence) and
+                # nothing violates the format/derivation checks, the answer is fully determined
+                # by code — a very weak model can only corrupt it, so finish here (0 tokens).
+                if not os.environ.get("LOCAL_AGENT_ALWAYS_MODEL") and all(conf.get(k) == "high" for k in sp.keys):
+                    problems = oracle.kv_constraints({k: seed[k] for k in sp.keys}, sp.keys,
+                                                     sp.evidence_dir or str(st.workdir), st.instruction)
+                    okk, _ = oracle.check_kv(sp.deliverable, sp.keys)
+                    if okk and not problems:
+                        log("forensics solved deterministically: all keys high-confidence and consistent (0 tokens)")
+                        return
+                    if problems:
+                        log("profile seed kept as a hint (constraint check flagged: " + "; ".join(problems)[:200] + ")")
+            else:
+                hints = {k: seed[k] for k in sp.keys if k in seed and conf.get(k) == "high"}
+                if hints:
+                    st.seed_partial = dict(hints, _detail=seed.get("_detail", ""))
+                    log("partial profile seed (hints only): " + ", ".join(f"{k}={v}" for k, v in hints.items()))
     if sp.kind == "code_fix":
         st.snapshot = oracle.snapshot_tree(st.workdir)
         try:
@@ -832,6 +897,18 @@ def run(st: State):
     st.brief = brief.build(sp, st.workdir, log=log)
     log(f"briefing: {len(st.brief.get('text', ''))} chars, {len(st.brief.get('hotspots') or [])} hotspots, "
         f"{len(st.brief.get('routes') or [])} routes")
+    if sp.kind == "ctf" and sp.deliverable and not os.environ.get("LOCAL_AGENT_ALWAYS_MODEL"):
+        try:
+            gate_root = Path(sp.evidence_dir) if sp.evidence_dir else st.workdir
+            flag, how = ctf_gate.solve(gate_root, sp.flag_prefix)
+        except Exception as exc:  # noqa: BLE001
+            flag, how = None, ""
+            log(f"ctf gate solver failed: {exc}")
+        if flag:
+            oracle.write_text(sp.deliverable, flag)
+            st.seen_flags.append(flag)
+            log(f"ctf solved deterministically ({how}) (0 tokens)")
+            return
     if sp.kind == "ctf" and sp.deliverable and st.brief.get("flags") and not os.environ.get("LOCAL_AGENT_ALWAYS_MODEL"):
         clean = [v for v, src in st.brief["flags"] if _clean_flag(v, sp.flag_prefix)]
         if len(clean) == 1:
@@ -907,6 +984,11 @@ def vote_kv(st: State):
         log("kv vote: the answer equals the deterministic seed; no further attempts")
         return
     attempts = [first]
+    seed_vote = None
+    if st.seed and all(k in st.seed for k in sp.keys):
+        seed_vote = {k: str(st.seed[k]) for k in sp.keys}
+        diff = [k for k in sp.keys if seed_vote[k] != first.get(k, "")]
+        log("kv vote: model and deterministic seed disagree on " + ", ".join(f"{k}: seed={seed_vote[k]} model={first.get(k)}" for k in diff))
     strategies = [
         (prompts.FORENSICS_SECOND_PASS, True, 0.2),
         ("Independent re-analysis with a checklist: for EACH key write 'key -> the task's defining words -> the exact "
@@ -939,11 +1021,15 @@ def vote_kv(st: State):
         if all(a == attempts[0] for a in attempts):
             log("kv vote: answers agree")
             break
+        if seed_vote is not None and ans == seed_vote:
+            log("kv vote: the second attempt agrees with the deterministic seed")
+            break
         if len(attempts) >= 3:
             break
+    voters = attempts + ([seed_vote] if seed_vote is not None else [])
     final = {}
     for k in sp.keys:
-        vals = [a.get(k, "").strip() for a in attempts if a.get(k, "").strip()]
+        vals = [a.get(k, "").strip() for a in voters if a.get(k, "").strip()]
         counts = {}
         for v in vals:
             counts[v] = counts.get(v, 0) + 1
@@ -951,8 +1037,13 @@ def vote_kv(st: State):
         if best[1] >= 2 or len(counts) == 1:
             final[k] = best[0]
         else:
-            # no majority: prefer the value that violates no rule, then the first attempt's
-            ranked = sorted(counts.keys(), key=lambda v: (_kv_score(st, {k: v}), vals.index(v)))
+            # no majority: prefer the value that violates no rule; then a seed value the
+            # statement defined literally (a weak model miscounts more often than code
+            # does); then the first attempt's value
+            def _rank(v):
+                seeded = seed_vote is not None and v == seed_vote.get(k) and st.seed_conf.get(k) == "high"
+                return (_kv_score(st, {k: v}), 0 if seeded else 1, vals.index(v))
+            ranked = sorted(counts.keys(), key=_rank)
             final[k] = ranked[0]
     if final != attempts[0]:
         log("kv vote: per-key result differs from the first attempt: " +

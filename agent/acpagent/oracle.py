@@ -482,11 +482,18 @@ def write_kv(path, values: dict, keys):
 
 # ---- flag / generic file ---------------------------------------------------------------
 
+def _code_fragment(flag: str) -> bool:
+    """`ACP{" + h[:20] + "}` is source code that builds a flag, not a flag."""
+    body = flag[flag.find("{") + 1:-1]
+    return any(ch in body for ch in "\"'[]()+;") or body.strip() in ("", "...", "flag", "FLAG")
+
+
 def extract_flag(text: str, prefix: str = ""):
     if not text:
         return None
     data = text.encode("utf-8", "replace")
     hits = [m.group(0).decode("ascii", "replace") for m in brief.FLAG_RE.finditer(data)]
+    hits = [h for h in hits if not _code_fragment(h)]
     if prefix:
         pref = [h for h in hits if h.startswith(prefix)]
         if pref:
