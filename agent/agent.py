@@ -486,7 +486,10 @@ def run_loop(st: State):
             break
         messages = trim_history(messages)
         try:
-            res = llm.chat(messages, tools=None if text_mode else tools.TOOL_SCHEMAS)
+            # The first turn is always exploration (a short tool call); a long first reply
+            # only happens when the model answers in prose because tools never reached it.
+            res = llm.chat(messages, tools=None if text_mode else tools.TOOL_SCHEMAS,
+                           max_tokens=2048 if rounds == 0 else None)
         except ToolsUnsupported:
             text_mode = True
             messages[0] = {"role": "system", "content": system_prompt(st, True)}
