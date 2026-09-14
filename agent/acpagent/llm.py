@@ -21,7 +21,7 @@ MIN_CALL_TIMEOUT = 15.0
 MAX_CALL_TIMEOUT = 300.0
 # Streaming reads: a model that produces nothing for this long is stuck (a long prompt
 # still has to be processed before the first token, so this is not tiny).
-IDLE_TIMEOUT = float(os.environ.get("LOCAL_AGENT_IDLE_TIMEOUT") or 150.0)
+IDLE_TIMEOUT = float(os.environ.get("LOCAL_AGENT_IDLE_TIMEOUT") or 180.0)
 MIN_USEFUL_CALL_SEC = 6.0
 # Seconds held back from the last call so the finaliser can still write a deliverable
 # inside the soft deadline.
