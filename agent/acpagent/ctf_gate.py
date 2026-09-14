@@ -59,6 +59,42 @@ def _text_files(root: Path, max_files: int = 60):
     return out
 
 
+_BIN_STR_RE = re.compile(rb"[\x20-\x7e]{4,60}")
+
+
+def _binary_strings(root: Path, max_files: int = 8, max_each: int = 400):
+    """Printable constants inside compiled programs.
+
+    A "reversing" challenge usually compares the input against a literal that is sitting
+    in the binary's read-only data, so the answer is already on disk — it just is not in
+    a text file."""
+    out = []
+    for p in brief.iter_files(root, limit=200):
+        try:
+            if not (0 < p.stat().st_size <= 8_000_000):
+                continue
+            with p.open("rb") as fh:
+                head = fh.read(4)
+            if head[:4] != b"\x7fELF" and b"\x00" not in p.open("rb").read(2048):
+                continue
+            data = p.read_bytes()
+        except OSError:
+            continue
+        found = []
+        for m in _BIN_STR_RE.finditer(data):
+            try:
+                found.append(m.group(0).decode("ascii"))
+            except UnicodeDecodeError:
+                continue
+            if len(found) >= max_each:
+                break
+        out.extend(found)
+        max_files -= 1
+        if max_files <= 0:
+            break
+    return out
+
+
 def _collect(root: Path):
     digests, texts = {}, []
     for p in _text_files(root):
@@ -70,6 +106,13 @@ def _collect(root: Path):
         for m in _DIGEST_RE.finditer(txt):
             d = m.group(1).lower()
             digests[d] = _HEX.get(len(d))
+    binary = _binary_strings(root)
+    if binary:
+        blob = "\n".join(binary)
+        texts.append(blob)
+        for m in _DIGEST_RE.finditer(blob):
+            d = m.group(1).lower()
+            digests.setdefault(d, _HEX.get(len(d)))
     return digests, "\n".join(texts)
 
 
@@ -357,7 +400,13 @@ def solve(root: Path, prefix: str = ""):
         _, text = _collect(root)
         if not text:
             text = "\n".join(p.read_text(errors="replace") for _, p in progs if p.stat().st_size < 200000)
-        tried = _candidates(text, limit=60)
+        tried = _candidates(text, limit=40)
+        # a literal the program itself carries is the likeliest password of all
+        for lit in _binary_strings(root, max_files=4, max_each=120):
+            low = lit.strip()
+            if 3 <= len(low) <= 40 and low not in tried and not low.startswith(("/", "GCC", "GLIBC", "__")):
+                tried.insert(0, low)
+        tried = tried[:80]
         if not tried:
             return None, ""
     for kind, path in progs:
