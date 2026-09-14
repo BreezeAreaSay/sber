@@ -24,11 +24,13 @@ third-party dependencies, so nothing can be missing in the `secureintelligent/ac
      repeating-key XOR with keys taken from source string constants (and `.join()`ed lists),
      archive members (zip/tar/gz, encrypted zips with source passwords), git history — a single
      clean candidate with the expected prefix is written directly.
-3. **Briefing** (`brief.py`, `digest.py`) gathers context before the first model call: directory
-   tree, HTTP routes, a risky-pattern scan (SQLi, command/code injection, traversal, SSRF,
-   secrets, weak crypto, XSS, XXE …), heads of data files, and for forensics a per-file digest
-   (timestamp range, top addresses/accounts, event-type counts, JSON field names) so a small
-   model confirms facts instead of computing them.
+3. **Briefing** (`brief.py`, `digest.py`, `profile.py`) gathers context before the first model
+   call: directory tree, HTTP routes, a risky-pattern scan (SQLi, command/code injection,
+   traversal, SSRF, secrets, weak crypto, XSS, XXE …), heads of data files; for forensics,
+   deterministic per-entity profiles (per-IP/per-account failed vs accepted logins, first
+   success and "failed before first success", HTTP access and JSONL audit profiles, rare events
+   in full) with every timestamp converted to UTC from the file's declared time zone, plus a
+   per-file digest; for CTF, the output of the challenge's own programs and the flag scan.
 4. **Model loop** (`agent.py`, `llm.py`, `tools.py`): a bounded ReAct loop over four tools
    (bash / read_file / write_file / str_replace), native function calling with automatic
    fallback to a text protocol, streaming with an idle timeout, transcript trimming, per-round
@@ -41,9 +43,13 @@ third-party dependencies, so nothing can be missing in the `secureintelligent/ac
    canonicalised), key=value format without placeholders and with entity values that actually
    occur in the evidence, flag-shaped content, or for code fixes: changed files compile, the app
    server restarts from the edited code, the project tests pass. Failures are fed back to the
-   model. At exit the agent always leaves a well-formed artifact: scan-derived and heuristic
-   access-control findings merged into the report, answers salvaged from the reply or tool
-   outputs, broken files restored. `run.sh` always exits 0.
+   model. Key=value answers additionally pass derivation checks (UTC values must be a real
+   conversion of an evidence timestamp, counts must be integers, entities must occur in the
+   evidence) and, when time allows, are re-derived by independent attempts (one with reasoning
+   enabled, one with a checklist) and combined per key by majority. At exit the agent always
+   leaves a well-formed artifact: scan-derived and heuristic access-control findings merged into
+   the report, answers salvaged from the reply or tool outputs, broken files restored. `run.sh`
+   always exits 0.
 
 Task statements in English and Russian are recognised. The LLM client copes with servers that
 reject tool schemas or `tool_choice`, ignore tools, stream `<think>` blocks, want
