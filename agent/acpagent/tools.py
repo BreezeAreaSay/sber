@@ -145,10 +145,11 @@ def read_file(path, workdir: Path, offset=None, limit=None) -> str:
         return note + truncate(body, MAX_TOOL_OUTPUT_CHARS * 2)
     if len(text) <= MAX_TOOL_OUTPUT_CHARS:
         return text
-    if fp.suffix.lower() not in _CODE_SUFFIXES and len(text) > 20000:
-        # Big logs / CSV / JSONL tokenize expensively and are rarely useful in full:
-        # show the shape and point at grep/awk/python or paging instead.
-        head = "\n".join(lines[:40])[:3000]
+    if fp.suffix.lower() not in _CODE_SUFFIXES and len(text) > 8000:
+        # Logs / CSV / JSONL tokenize expensively (numbers and addresses cost ~1 token
+        # per 2 chars) and are rarely useful in full: show the shape and point at
+        # grep/awk/python or paging instead.
+        head = "\n".join(lines[:30])[:2500]
         return (f"[{fp}: large data file, {total} lines, {len(text)} chars. Showing the first lines only. "
                 f"Use bash (grep -n / awk / sort | uniq -c / a python3 script) to extract what you need, "
                 f"or read_file with offset/limit for a specific range.]\n{head}")
