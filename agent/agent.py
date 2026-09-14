@@ -272,7 +272,15 @@ def check_done(st: State, final_text: str):
                     return ok, why
             return True, ""
         if sp.kind == "json_report":
-            return oracle.check_json_report(sp.deliverable, sp.json_root, sp.json_fields)
+            ok, why = oracle.check_json_report(sp.deliverable, sp.json_root, sp.json_fields)
+            if not ok and final_text and len(final_text) > 200:
+                obj = oracle.load_json_lenient(final_text)
+                report, findings = oracle.normalise_report(obj, sp.json_root, sp.json_fields) if obj is not None else (None, None)
+                if report is not None and findings:
+                    oracle.write_text(sp.deliverable, json.dumps(report, ensure_ascii=False, indent=2))
+                    log(f"salvaged a JSON report with {len(findings)} finding(s) from the reply")
+                    return oracle.check_json_report(sp.deliverable, sp.json_root, sp.json_fields)
+            return ok, why
         if sp.kind == "kv_report":
             ok, why = oracle.check_kv(sp.deliverable, sp.keys)
             if not ok and final_text:
