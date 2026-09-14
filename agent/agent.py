@@ -75,6 +75,8 @@ class State:
         self.critical_nudged = False
         self.mechanical_notes = []
         self.seen_flags = []  # flag-shaped strings observed in tool outputs (ctf)
+        self.call_history = []  # (tool, args) of every executed call, for retry notes
+        self.retry_note = ""
 
 
 # ---- text protocol recovery ----------------------------------------------------------------
@@ -237,6 +239,8 @@ def user_prompt(st: State) -> str:
     parts = [f"TASK:\n{st.instruction.strip()}"]
     if st.brief.get("text"):
         parts.append(f"CONTEXT GATHERED AUTOMATICALLY (verify before relying on it):\n{st.brief['text']}")
+    if st.retry_note:
+        parts.append(st.retry_note)
     if st.mechanical_notes:
         parts.append("ALREADY FIXED MECHANICALLY (tests pass with these changes; do not redo them):\n"
                      + "\n".join(f"- {n}" for n in st.mechanical_notes))
@@ -525,6 +529,7 @@ def run_loop(st: State):
                     st.seen_flags.append(seen)
                     log(f"flag-shaped string seen in tool output: {seen}")
             preview = result.replace("\n", " ")[:160]
+            st.call_history.append((c.name, json.dumps(c.arguments, ensure_ascii=False)[:200]))
             log(f"  {c.name}({json.dumps(c.arguments, ensure_ascii=False)[:150]}) -> {preview}")
             if native:
                 messages.append({"role": "tool", "tool_call_id": c.id, "content": result})
@@ -726,6 +731,16 @@ def run(st: State):
     st.llm.discover_model()
     log(f"model={st.llm.model} endpoint={st.llm.url}")
     run_loop(st)
+    # A stalled first attempt on a short-transcript task gets one fresh start with a
+    # different framing while there is still meaningful time left.
+    if sp.kind in ("ctf", "kv_report", "generic") and st.llm.remaining() > 150 and not st.llm.exhausted(8000):
+        ok, why = check_done(st, st.final_text)
+        if not ok:
+            recent = "\n".join(f"- {name}({args})" for name, args in st.call_history[-8:]) or "(nothing)"
+            st.retry_note = prompts.RETRY_NOTE.format(calls=recent)
+            st.llm.temperature = 0.5
+            log(f"first attempt did not verify ({why[:120]}); retrying with a fresh transcript")
+            run_loop(st)
 
 
 def main(argv) -> int:

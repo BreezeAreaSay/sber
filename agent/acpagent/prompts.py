@@ -62,6 +62,8 @@ Recipes:
 - Binaries: chmod +x X && ./X (with the arguments its usage text asks for); objdump -d X | less-free grep; strings/rodata; compare/patch with python.
 - Archives/containers: unzip -l, tar tf, zipfile in python (try passwords found in nearby files); openssl enc -d -<cipher> -k <key> -in X.
 - Web/services: curl -s http://127.0.0.1:PORT/...; sqlite3-like data: python3 sqlite3 module.
+- A script that decrypts/decodes a secret: reuse its decode logic directly on the data from python3 (copy the function or import the module) — do not guess or brute-force passwords/hashes.
+- If a command did not reveal anything new, do NOT run it again; pick a different approach.
 {flag_hint}
 {deliverable_block}
 """
@@ -83,8 +85,12 @@ One tool call per reply. The result will be returned to you in a <tool_response>
 NOT_DONE = "NOT DONE — the deliverable check failed: {why}\nFix exactly that using tool calls, then reply DONE again."
 NUDGE_NO_TOOL = ("Your reply contained no tool call and the task is not finished yet. Continue with exactly one "
                  "tool call (bash / read_file / write_file / str_replace).")
-NUDGE_REPEAT = ("You repeated the same tool call and got the same result. That makes no progress: change the "
-                "command or the file, or write the deliverable now.")
+NUDGE_REPEAT = ("STOP: you repeated the same tool call and got the same result; that makes no progress. "
+                "State in one line what that result tells you, then take a DIFFERENT action: inspect a different "
+                "file, decode the data directly with a python3 heredoc script, or write the deliverable now.")
+RETRY_NOTE = ("A previous attempt at this task got stuck and was abandoned. It ran these commands without success:\n"
+              "{calls}\nDo not repeat that approach. Think about what the files actually contain and try a "
+              "different method (e.g. write one python3 script that does the whole computation and prints the result).")
 
 
 def report_shape(root, fields):
