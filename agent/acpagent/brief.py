@@ -470,9 +470,12 @@ def _string_constants(root: Path, max_files: int = 60):
             if lit not in seen:
                 seen.add(lit)
                 out.append(lit)
+        # separators actually used with .join() in this file decide how list literals are
+        # assembled; guessing every separator produces look-alike decoys
+        seps = set(re.findall(r'''['"]([^'"]{0,3})['"]\s*\.join\(''', text)) or {"", "-", "_"}
         for m in _LIST_LIT_RE.finditer(text):
             parts = re.findall(r'''['"]([^'"]{1,32})['"]''', m.group(1))
-            for sep in ("", "-", "_", ":", " ", "."):
+            for sep in sorted(seps, key=len):
                 joined = sep.join(parts)
                 if 3 <= len(joined) <= 64 and joined not in seen:
                     seen.add(joined)

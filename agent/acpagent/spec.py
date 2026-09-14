@@ -104,6 +104,7 @@ class Spec:
     keys: list = field(default_factory=list)        # kv_report keys, in statement order
     json_fields: list = field(default_factory=list) # per-finding fields for a json report
     json_root: str = "findings"
+    report_format: str = "json"           # json | text (markdown/plain report)
     test_cmd: str = ""
     no_modify: bool = False
     evidence_dir: str = ""
@@ -319,7 +320,10 @@ def triage(instruction: str, workdir: Path) -> Spec:
             spec.json_fields = list(DEFAULT_REPORT_FIELDS)
         spec.deliverable = _absolute(find_deliverable(text, workdir, "security_report.json", "report.json", "findings.json"), workdir)
         if not spec.deliverable:
-            spec.deliverable = str(Path(workdir) / "security_report.json")
+            spec.deliverable = str(Path(workdir) / ("security_report.md" if ("markdown" in text.lower() or ".md" in text) and "json" not in text.lower() else "security_report.json"))
+        ext = Path(spec.deliverable).suffix.lower()
+        if ext in (".md", ".txt", ".rst", ".html") and "json" not in text.lower():
+            spec.report_format = "text"
         spec.also_fix = fix_hit
         return spec
 

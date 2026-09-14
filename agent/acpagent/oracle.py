@@ -257,6 +257,53 @@ def heuristic_findings(routes, workdir, fields):
     return [{k: f.get(k, "") for k in list(dict.fromkeys(list(fields) + list(f.keys())))} for f in out[:12]]
 
 
+_VULN_WORDS = re.compile(r"inject|traversal|xss|csrf|ssrf|authoriz|authentic|idor|hard-?coded|secret|crypt|deserializ|"
+                         r"command|overflow|disclosure|exposure|misconfig|cwe-|vulnerab|уязвим|инъекц", re.I)
+
+
+def check_text_report(path):
+    p = Path(path)
+    if not p.is_file():
+        return False, f"{path} does not exist yet"
+    text = read_text(p)
+    if len(text.strip()) < 200:
+        return False, f"{path} is too short for a report"
+    if not _VULN_WORDS.search(text):
+        return False, f"{path} does not describe any vulnerability"
+    return True, ""
+
+
+def findings_to_markdown(findings) -> str:
+    out = ["# Security Audit Report", ""]
+    for i, f in enumerate(findings, 1):
+        out.append(f"## {i}. {f.get('title', 'Finding')} [{f.get('severity', 'high')}]")
+        for k in ("category", "location", "evidence", "impact", "recommendation"):
+            if f.get(k):
+                out.append(f"- **{k.capitalize()}**: {f[k]}")
+        out.append("")
+    return "\n".join(out)
+
+
+def merge_text_report(path, fields, hotspots, routes, log=print, workdir=None):
+    text = read_text(path)
+    low = text.lower()
+    extra = []
+    for f in fallback_findings([h for h in hotspots if h["severity"] in ("critical", "high")], routes, fields):
+        base = os.path.basename(f.get("file", "")).lower()
+        if base and base in low and f["category"].split(" (")[0].lower().split()[0] in low:
+            continue
+        extra.append(f)
+    if not re.search(r"idor|authoriz|authenticat|access control", low) and workdir:
+        try:
+            extra.extend(heuristic_findings(routes, workdir, fields)[:6])
+        except Exception:  # noqa: BLE001
+            pass
+    if extra:
+        write_text(path, text.rstrip() + "\n\n# Additional findings from static analysis\n\n" +
+                   findings_to_markdown(extra).split("\n", 2)[2])
+        log(f"[oracle] appended {len(extra)} scan finding(s) to the text report")
+
+
 def check_json_report(path, root, fields):
     p = Path(path)
     if not p.is_file():
