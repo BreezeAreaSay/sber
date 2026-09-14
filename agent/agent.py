@@ -74,6 +74,7 @@ class State:
         self.tests_passed = False
         self.critical_nudged = False
         self.mechanical_notes = []
+        self.seen_flags = []  # flag-shaped strings observed in tool outputs (ctf)
 
 
 # ---- text protocol recovery ----------------------------------------------------------------
@@ -500,6 +501,11 @@ def run_loop(st: State):
                 result = tools.dispatch(c.name, c.arguments, st.workdir)
             if len(calls) > 1 and len(result) > per_call_cap:
                 result = tools.truncate(result, per_call_cap)
+            if sp.kind == "ctf":
+                seen = oracle.extract_flag(result, sp.flag_prefix)
+                if seen and (not sp.flag_prefix or seen.startswith(sp.flag_prefix)) and seen not in st.seen_flags:
+                    st.seen_flags.append(seen)
+                    log(f"flag-shaped string seen in tool output: {seen}")
             preview = result.replace("\n", " ")[:160]
             log(f"  {c.name}({json.dumps(c.arguments, ensure_ascii=False)[:150]}) -> {preview}")
             if native:
@@ -585,13 +591,15 @@ def finalize(st: State):
                 ok, _ = oracle.check_flag_file(sp.deliverable, sp.flag_prefix)
                 if not ok:
                     flag = oracle.extract_flag(st.final_text or "", sp.flag_prefix)
+                    if not flag and st.seen_flags:
+                        flag = st.seen_flags[-1]
                     if not flag and st.brief.get("flags"):
                         flag = st.brief["flags"][0][0]
                     if flag:
                         oracle.write_text(sp.deliverable, flag)
                         log(f"wrote best-effort flag: {flag}")
             flag = oracle.extract_flag(oracle.read_text(sp.deliverable) if sp.deliverable else "", sp.flag_prefix) or \
-                oracle.extract_flag(st.final_text or "", sp.flag_prefix)
+                oracle.extract_flag(st.final_text or "", sp.flag_prefix) or (st.seen_flags[-1] if st.seen_flags else None)
             if flag:
                 print(f"FLAG: {flag}", flush=True)
         elif sp.kind == "generic" and sp.deliverable and not Path(sp.deliverable).is_file() and st.final_text:

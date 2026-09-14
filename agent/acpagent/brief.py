@@ -270,6 +270,7 @@ COMMON_TAGS = (b"flag{", b"FLAG{", b"Flag{", b"ctf{", b"CTF{", b"ACP{", b"acp{",
                b"HTB{", b"picoCTF{", b"secret{", b"SECRET{", b"AIRI{", b"airi{", b"sber{", b"SBER{")
 _B64_RE = re.compile(rb"[A-Za-z0-9+/=]{16,}")
 _HEX_RE = re.compile(rb"(?:[0-9a-fA-F]{2}){8,}")
+_B32_RE = re.compile(rb"[A-Z2-7]{16,}=*")
 
 
 def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_bytes: int = 3_000_000):
@@ -320,6 +321,19 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
                 consider(bytes.fromhex(chunk.decode()), f"{rel} (hex)")
             except Exception:  # noqa: BLE001
                 pass
+        for m in _B32_RE.finditer(data):
+            chunk = m.group(0)
+            try:
+                consider(base64.b32decode(chunk + b"=" * (-len(chunk) % 8)), f"{rel} (base32)")
+            except Exception:  # noqa: BLE001
+                pass
+        consider(data[::-1], f"{rel} (reversed)")
+        if len(data) <= 65536:
+            # single-byte XOR: the classic first layer of a CTF "encryption"
+            for k in range(1, 256):
+                x = bytes(b ^ k for b in data)
+                if b"{" in x and b"}" in x:
+                    consider(x, f"{rel} (xor 0x{k:02x})")
         if len(found) > 20:
             break
     uniq = []
