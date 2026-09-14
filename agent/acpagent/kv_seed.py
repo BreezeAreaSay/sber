@@ -238,12 +238,20 @@ def solve(root, keys, instruction: str):
         elif is_count:
             own = [l for l in _attack_literals(clause) if any(l.lower() in ln.lower() for ln in lines)]
             if kind == "auth":
-                if "before" in clause and any(w in clause for w in ("success", "accepted", "login")):
+                whole = any(w in clause for w in ("total", "all ", "whole", "entire", "overall", "in total", "всего"))
+                if "before" in clause and any(w in clause for w in ("success", "accepted", "login", "success")):
                     value, why, c = str(rec["failed_before"]), "Failed lines from that IP before its first Accepted line", "high"
-                elif any(w in clause for w in ("fail", "unsuccessful", "wrong", "rejected", "неудач")):
-                    value, why, c = str(rec["failed"]), "Failed lines from that IP (whole file)", "high"
                 elif "invalid" in clause:
                     value, why, c = str(rec["invalid"]), "Invalid user lines from that IP", "high"
+                elif whole and any(w in clause for w in ("fail", "unsuccessful", "wrong", "rejected", "неудач")):
+                    value, why, c = str(rec["failed"]), "all Failed lines from that IP", "high"
+                elif any(w in clause for w in ("fail", "unsuccessful", "wrong", "rejected", "неудач")):
+                    # bare "failed attempts" is ambiguous (total vs before success); if the IP
+                    # never succeeded the two are equal, so it is safe; otherwise let the model decide
+                    if rec["first_accept"] is None:
+                        value, why, c = str(rec["failed"]), "Failed lines from that IP (never succeeded, so total = before success)", "high"
+                    else:
+                        value, why, c = str(rec["failed_before"]), "Failed lines from that IP before its first success (bare 'failed', ambiguous)", "low"
                 else:
                     value, why, c = str(rec["failed"]), "Failed lines from that IP (default reading)", "low"
             else:
