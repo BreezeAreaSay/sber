@@ -13,13 +13,22 @@ third-party dependencies, so nothing can be missing in the `secureintelligent/ac
    - exact-content files (one or several);
    - the structured exfiltration-forensics family (`forensic_seed.py`, mirrors the normative
      field mapping of the statement; used as a hint to the model otherwise);
-   - **mechanical SQL parameterization** (`sqlfix.py`): f-string SQL → bound parameters for
-     asyncpg / psycopg / sqlite styles, kept only if the code compiles, the app server restarts
-     and the project's tests pass, otherwise reverted.
-3. **Briefing** (`brief.py`) gathers context before the first model call: directory tree, HTTP
-   routes, a risky-pattern scan (SQLi, command/code injection, traversal, SSRF, secrets, weak
-   crypto, XSS, XXE …), heads of data files, flag-shaped strings (plain, base64/32, hex, rot13,
-   single-byte XOR, reversed).
+   - **mechanical SQL parameterization** (`sqlfix.py`): SQL built with f-strings, `%`,
+     `.format()` or `+` concatenation → bound parameters (asyncpg / psycopg / sqlite styles),
+     including the `conditions.append(f"...")` idiom; kept only if the code compiles, the app
+     server restarts and the project's tests pass, otherwise reverted;
+   - **mechanical command-injection / configuration hardening** (`safefix.py`): `subprocess`/
+     `os.system` with `shell=True` templates → argument lists, `yaml.load` → `safe_load`,
+     `debug=True`, `verify=False`; same test-verified keep-or-revert rule;
+   - **CTF flag recovery**: literal / base64 / base32 / hex / rot13 / reversed / single-byte XOR /
+     repeating-key XOR with keys taken from source string constants (and `.join()`ed lists),
+     archive members (zip/tar/gz, encrypted zips with source passwords), git history — a single
+     clean candidate with the expected prefix is written directly.
+3. **Briefing** (`brief.py`, `digest.py`) gathers context before the first model call: directory
+   tree, HTTP routes, a risky-pattern scan (SQLi, command/code injection, traversal, SSRF,
+   secrets, weak crypto, XSS, XXE …), heads of data files, and for forensics a per-file digest
+   (timestamp range, top addresses/accounts, event-type counts, JSON field names) so a small
+   model confirms facts instead of computing them.
 4. **Model loop** (`agent.py`, `llm.py`, `tools.py`): a bounded ReAct loop over four tools
    (bash / read_file / write_file / str_replace), native function calling with automatic
    fallback to a text protocol, streaming with an idle timeout, transcript trimming, per-round
@@ -28,12 +37,17 @@ third-party dependencies, so nothing can be missing in the `secureintelligent/ac
    an edit, indentation auto-repair of pasted blocks, whitespace-insensitive `str_replace`,
    heredoc hints on shell quoting errors, large data files summarised instead of dumped.
 5. **Oracles and fallbacks** (`oracle.py`): "DONE" is accepted only when the deliverable
-   verifies — JSON report shape (repaired and normalised), key=value format without
-   placeholders, flag-shaped content, or for code fixes: changed files compile, the app server
-   restarts from the edited code, the project tests pass. Failures are fed back to the model.
-   At exit the agent always leaves a well-formed artifact: scan-derived findings merged into
-   the report, answers salvaged from the reply or tool outputs, broken files restored.
-   `run.sh` always exits 0.
+   verifies — JSON (or Markdown) report shape (repaired and normalised, severities
+   canonicalised), key=value format without placeholders and with entity values that actually
+   occur in the evidence, flag-shaped content, or for code fixes: changed files compile, the app
+   server restarts from the edited code, the project tests pass. Failures are fed back to the
+   model. At exit the agent always leaves a well-formed artifact: scan-derived and heuristic
+   access-control findings merged into the report, answers salvaged from the reply or tool
+   outputs, broken files restored. `run.sh` always exits 0.
+
+Task statements in English and Russian are recognised. The LLM client copes with servers that
+reject tool schemas or `tool_choice`, ignore tools, stream `<think>` blocks, want
+`max_completion_tokens`, or serve a differently named model.
 
 ## Local testing
 
