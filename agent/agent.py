@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acpagent import brief, forensic_seed, oracle, prompts, sqlfix, tools  # noqa: E402
+from acpagent import brief, forensic_seed, oracle, prompts, safefix, sqlfix, tools  # noqa: E402
 from acpagent import spec as specmod  # noqa: E402
 from acpagent.llm import (LLM, BudgetExceeded, ContextTooLong, ToolCall, ToolsUnsupported,  # noqa: E402
                           estimate_tokens, parse_arguments)
@@ -358,35 +358,51 @@ def check_code_fix(st: State):
 
 # ---- deterministic code fix ---------------------------------------------------------------------
 
-def mechanical_sql_fix(st: State) -> bool:
-    """Parameterize f-string SQL mechanically; keep it only if the project still passes
-    its tests. Returns True when nothing risky is left and the task is finished."""
-    originals, notes = sqlfix.apply(st.workdir)
+def _verify_stage(st: State, label: str, originals: dict, notes: list, module) -> bool:
+    """Keep a mechanical rewrite only if the code compiles, the app restarts and the
+    tests pass; otherwise revert it (and put the server back)."""
     if not originals:
         return False
     for n in notes:
-        log(f"sqlfix: {n}")
+        log(f"{label}: {n}")
     ok = True
     errs = oracle.compile_errors([Path(p) for p in originals])
     if errs:
-        log(f"sqlfix produced syntax errors; reverting: {errs[0][:200]}")
+        log(f"{label} produced syntax errors; reverting: {errs[0][:200]}")
         ok = False
     if ok and st.servers:
         problems = oracle.restart_servers(st.servers, log=log)
         if problems:
-            log(f"server failed after sqlfix; reverting: {problems[0][:200]}")
+            log(f"server failed after {label}; reverting: {problems[0][:200]}")
             ok = False
     if ok and st.spec.test_cmd:
-        tok, out = oracle.run_tests(st.spec.test_cmd, st.workdir, min(TEST_TIMEOUT_SEC, max(20, st.deadline_ts - time.monotonic() - 30)))
+        tok, out = oracle.run_tests(st.spec.test_cmd, st.workdir,
+                                    min(TEST_TIMEOUT_SEC, max(20, st.deadline_ts - time.monotonic() - 30)))
         if tok is False:
-            log(f"tests fail after sqlfix; reverting: {out[-300:]}")
+            log(f"tests fail after {label}; reverting: {out[-300:]}")
             ok = False
         elif tok is None:
-            log("tests produced no usable result after sqlfix; keeping the rewrite (it compiles)")
+            log(f"tests produced no usable result after {label}; keeping the rewrite (it compiles)")
     if not ok:
-        sqlfix.revert(originals)
+        module.revert(originals)
         if st.servers:
             oracle.restart_servers(st.servers, log=log)
+        return False
+    return True
+
+
+def mechanical_sql_fix(st: State) -> bool:
+    """Apply the mechanical rewrites (SQL parameterization, then command/config
+    hardening), each verified by the project's tests. Returns True when nothing risky
+    is left and the task is finished."""
+    kept = []
+    originals, notes = sqlfix.apply(st.workdir)
+    if _verify_stage(st, "sqlfix", originals, notes, sqlfix):
+        kept.extend(notes)
+    originals, notes = safefix.apply(st.workdir)
+    if _verify_stage(st, "safefix", originals, notes, safefix):
+        kept.extend(notes)
+    if not kept:
         return False
     st.tests_passed = True
     remaining = [h for h in brief.scan_hotspots(st.workdir)
@@ -394,10 +410,10 @@ def mechanical_sql_fix(st: State) -> bool:
     if st.spec.deliverable:
         remaining.append({"file": st.spec.deliverable, "line": 0, "label": "deliverable still to be written"})
     if not remaining:
-        log("code_fix solved deterministically: SQL parameterized, tests pass, no risky patterns left (0 tokens)")
+        log("code_fix solved deterministically: mechanical fixes applied, tests pass, no risky patterns left (0 tokens)")
         return True
-    st.mechanical_notes = notes
-    log(f"sqlfix kept; {len(remaining)} risky pattern(s) remain for the model")
+    st.mechanical_notes = kept
+    log(f"mechanical fixes kept; {len(remaining)} risky pattern(s) remain for the model")
     return False
 
 
