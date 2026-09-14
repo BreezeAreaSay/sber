@@ -15,8 +15,13 @@ import time
 import urllib.error
 import urllib.request
 
+import os
+
 MIN_CALL_TIMEOUT = 15.0
-MAX_CALL_TIMEOUT = 240.0
+MAX_CALL_TIMEOUT = 300.0
+# Streaming reads: a model that produces nothing for this long is stuck (a long prompt
+# still has to be processed before the first token, so this is not tiny).
+IDLE_TIMEOUT = float(os.environ.get("LOCAL_AGENT_IDLE_TIMEOUT") or 150.0)
 MIN_USEFUL_CALL_SEC = 6.0
 # Seconds held back from the last call so the finaliser can still write a deliverable
 # inside the soft deadline.
@@ -96,6 +101,11 @@ class LLM:
         self.max_tokens = DEFAULT_MAX_TOKENS
         self.temperature = 0.0
         self.last_error = ""
+        # Streaming lets a slow but progressing generation finish, while a hung one is
+        # cut by the idle timeout. Switched off if the server cannot stream.
+        self.stream = os.environ.get("LOCAL_AGENT_NO_STREAM", "") == ""
+        self._stream_failures = 0
+        self._stream_options = True
 
     # ---- budget -----------------------------------------------------------------
 
@@ -169,14 +179,14 @@ class LLM:
             if timeout < MIN_USEFUL_CALL_SEC:
                 raise BudgetExceeded("not enough time left for another model call")
             body = self._body(messages, tools, temp, mt)
-            data = json.dumps(body).encode("utf-8")
-            req = urllib.request.Request(self.url, data=data, headers=self._headers(), method="POST")
             started = time.monotonic()
             self.calls += 1
             try:
-                with urllib.request.urlopen(req, timeout=max(MIN_CALL_TIMEOUT, timeout)) as resp:
-                    raw = resp.read().decode("utf-8", "replace")
-                return self._parse(raw)
+                if self.stream:
+                    data = self._request_stream(body, timeout)
+                else:
+                    data = self._request_plain(body, timeout)
+                return self._parse(data, messages)
             except urllib.error.HTTPError as exc:
                 self.failures += 1
                 try:
@@ -187,6 +197,14 @@ class LLM:
                 self.last_error = f"HTTP {exc.code}: {err_text[:300]}"
                 self.log(f"[llm] call failed: {self.last_error}"[:400])
                 if exc.code in (400, 404, 422):
+                    if self.stream and self._stream_options and "stream_options" in low:
+                        self.log("[llm] endpoint rejects stream_options; retrying without it")
+                        self._stream_options = False
+                        continue
+                    if self.stream and ("stream" in low):
+                        self.log("[llm] endpoint rejects streaming; retrying without it")
+                        self.stream = False
+                        continue
                     if self.extra and any(s in low for s in _UNKNOWN_FIELD_SIGNS):
                         self.log("[llm] endpoint rejects extra fields; retrying without them")
                         self.extra = {}
@@ -213,9 +231,16 @@ class LLM:
                 spent = time.monotonic() - started
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 self.log(f"[llm] call failed after {spent:.0f}s: {self.last_error}"[:300])
-                if spent >= timeout * 0.9:
-                    # The generation itself outran the timeout. Repeating it verbatim
-                    # buys the same result; shorten the output cap once, then give up.
+                if isinstance(exc, GenerationTooLong):
+                    raise BudgetExceeded(str(exc))
+                if spent >= timeout * 0.9 or isinstance(exc, (socket.timeout, TimeoutError)):
+                    if self.stream and self._stream_failures == 0 and self.remaining() > 60:
+                        # A stream that stalled once may be a server that buffers the whole
+                        # reply; try the plain request before giving up on the call.
+                        self._stream_failures += 1
+                        self.stream = False
+                        self.log("[llm] stream stalled; retrying without streaming")
+                        continue
                     if mt > 1536 and self.remaining() > 60:
                         mt = max(1536, mt // 2)
                         continue
@@ -233,8 +258,9 @@ class LLM:
                 continue
         raise BudgetExceeded(f"model call failed repeatedly: {self.last_error}")
 
-    def _parse(self, raw: str) -> ChatResult:
-        data = json.loads(raw)
+    def _parse(self, data, messages=None) -> ChatResult:
+        if isinstance(data, (str, bytes)):
+            data = json.loads(data)
         if not isinstance(data, dict) or "choices" not in data:
             err = data.get("error") if isinstance(data, dict) else None
             raise ValueError(f"no choices in response: {str(err or data)[:200]}")
@@ -252,8 +278,10 @@ class LLM:
         usage = data.get("usage") or {}
         ui = int(usage.get("prompt_tokens") or 0)
         uo = int(usage.get("completion_tokens") or 0)
-        if not ui:
-            ui = estimate_tokens(json.dumps(data.get("_request", "")))  # unknown: 0
+        if not ui and messages is not None:
+            ui = sum(estimate_tokens(m.get("content") or "") for m in messages) + 400
+        if not uo:
+            uo = estimate_tokens(text) + sum(estimate_tokens(json.dumps(tc)) for tc in (msg.get("tool_calls") or []))
         self.prompt_tokens += ui
         self.completion_tokens += uo
         self.tokens_used += ui + uo
@@ -275,6 +303,105 @@ class LLM:
                 text = ""
         return ChatResult(text=text, tool_calls=calls, finish=finish, usage_in=ui, usage_out=uo,
                           reasoning=str(reasoning or ""))
+
+
+class GenerationTooLong(Exception):
+    """The streamed generation ran past the deadline."""
+
+
+def _request_plain(self, body, timeout):
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(self.url, data=data, headers=self._headers(), method="POST")
+    with urllib.request.urlopen(req, timeout=max(MIN_CALL_TIMEOUT, timeout)) as resp:
+        return resp.read().decode("utf-8", "replace")
+
+
+def _request_stream(self, body, timeout):
+    """POST with stream=True and assemble the SSE chunks into one response object."""
+    body = dict(body)
+    body["stream"] = True
+    if self._stream_options:
+        body["stream_options"] = {"include_usage": True}
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(self.url, data=data, headers=self._headers(), method="POST")
+    idle = max(MIN_CALL_TIMEOUT, min(IDLE_TIMEOUT, timeout))
+    started = time.monotonic()
+    resp = urllib.request.urlopen(req, timeout=idle)
+    ctype = (resp.headers.get("Content-Type") or "").lower()
+    if "text/event-stream" not in ctype:
+        raw = resp.read().decode("utf-8", "replace")
+        try:
+            return json.loads(raw)
+        except ValueError:
+            pass
+        # Some servers stream without the SSE content type; fall through and parse lines.
+        lines = raw.splitlines()
+    else:
+        lines = resp
+    text, reasoning, calls = [], [], {}
+    finish, usage = None, None
+    try:
+        for raw_line in lines:
+            if time.monotonic() - started > timeout:
+                raise GenerationTooLong("generation ran past the deadline")
+            line = raw_line.decode("utf-8", "replace") if isinstance(raw_line, bytes) else raw_line
+            line = line.strip()
+            if not line or not line.startswith("data:"):
+                if line.startswith("{") and "error" in line:
+                    raise ValueError(line[:300])
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                chunk = json.loads(payload)
+            except ValueError:
+                continue
+            if not isinstance(chunk, dict):
+                continue
+            if chunk.get("error") and not chunk.get("choices"):
+                raise ValueError(str(chunk["error"])[:300])
+            if chunk.get("usage"):
+                usage = chunk["usage"]
+            for ch in chunk.get("choices") or []:
+                delta = ch.get("delta") or {}
+                if delta.get("content"):
+                    text.append(delta["content"])
+                rc = delta.get("reasoning_content") or delta.get("reasoning")
+                if rc:
+                    reasoning.append(rc)
+                for tc in delta.get("tool_calls") or []:
+                    idx = tc.get("index", 0) if isinstance(tc.get("index", 0), int) else 0
+                    slot = calls.setdefault(idx, {"id": None, "name": "", "arguments": ""})
+                    if tc.get("id"):
+                        slot["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    name = fn.get("name")
+                    if name and name != slot["name"]:
+                        slot["name"] = name if not slot["name"] else slot["name"] + name
+                    args = fn.get("arguments")
+                    if args:
+                        slot["arguments"] += args if isinstance(args, str) else json.dumps(args)
+                if ch.get("finish_reason"):
+                    finish = ch["finish_reason"]
+    finally:
+        try:
+            resp.close()
+        except Exception:  # noqa: BLE001
+            pass
+    message = {"content": "".join(text), "reasoning_content": "".join(reasoning)}
+    if calls:
+        message["tool_calls"] = [
+            {"id": slot["id"] or f"call_{self.calls}_{i}", "type": "function",
+             "function": {"name": slot["name"], "arguments": slot["arguments"]}}
+            for i, slot in sorted(calls.items())
+        ]
+    return {"choices": [{"message": message, "finish_reason": finish or ("tool_calls" if calls else "stop")}],
+            "usage": usage or {}}
+
+
+LLM._request_plain = _request_plain
+LLM._request_stream = _request_stream
 
 
 class ToolsUnsupported(Exception):
