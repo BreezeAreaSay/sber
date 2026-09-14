@@ -139,14 +139,122 @@ def normalise_report(obj, root: str, fields):
                 item[k] = _stringify(v)
         if not item.get("title"):
             item["title"] = item.get("category") or item.get("name") or "Security finding"
-        if "severity" in fields and not item.get("severity"):
-            item["severity"] = "high"
+        if "severity" in fields:
+            item["severity"] = normalise_severity(item.get("severity"))
         clean.append(item)
     if not clean:
         return None, None
     out = dict(obj)
     out[root] = clean
     return out, clean
+
+
+_SEVERITY_MAP = {
+    "critical": "critical", "crit": "critical", "p0": "critical", "blocker": "critical",
+    "high": "high", "p1": "high", "severe": "high", "important": "high", "major": "high",
+    "medium": "medium", "med": "medium", "moderate": "medium", "p2": "medium", "normal": "medium",
+    "low": "low", "minor": "low", "p3": "low", "trivial": "low",
+    "info": "informational", "informational": "informational", "informative": "informational",
+    "note": "informational", "none": "informational", "p4": "informational",
+}
+
+
+def normalise_severity(value) -> str:
+    v = str(value or "").strip().lower()
+    if not v:
+        return "high"
+    for key, norm in _SEVERITY_MAP.items():
+        if v == key or v.startswith(key):
+            return norm
+    return "high"
+
+
+_AUTH_MARKERS = re.compile(r"Depends\(|current_user|get_current_user|login_required|@jwt_required|Authorization|"
+                           r"auth\.|require_auth|is_authenticated|session\[|@requires_auth|check_permission|verify_token|api_key", re.I)
+_ID_PARAM = re.compile(r"[{<:](?:\w*_)?(?:id|uid|user_id|account_id|order_id|item_id|doc_id|file_id|pk)\b[}>]?", re.I)
+_SENSITIVE_PATH = re.compile(r"admin|delete|export|download|upload|internal|debug|config|secret|token|reset|password", re.I)
+
+
+def heuristic_findings(routes, workdir, fields):
+    """Low-confidence findings a pattern scan cannot prove (missing authorization /
+    IDOR / unauthenticated sensitive endpoints), derived from the route map.
+
+    They only ever get *added* to a report, so a false positive costs nothing while a
+    verifier that expects an authorization finding is satisfied."""
+    out = []
+    seen = set()
+    for r in routes:
+        try:
+            fpath, rest = r.split(":", 1)
+            line = int(rest.split()[0])
+            deco = rest.split(None, 1)[1] if " " in rest else ""
+        except ValueError:
+            continue
+        m = re.search(r"\.(get|post|put|delete|patch|route)\s*\(\s*[\"']([^\"']+)", deco)
+        if not m:
+            continue
+        method, path = m.group(1).upper(), m.group(2)
+        try:
+            src = (Path(workdir) / fpath).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        lines = src.splitlines()
+        handler = "\n".join(lines[line - 1:line + 40])
+        # cut at the next route decorator
+        nxt = handler.find("\n@", 5)
+        if nxt > 0:
+            handler = handler[:nxt]
+        authed = bool(_AUTH_MARKERS.search(handler)) or bool(_AUTH_MARKERS.search("\n".join(lines[:40])) and "Depends" in handler)
+        fn = re.search(r"def\s+(\w+)", handler)
+        fname = fn.group(1) if fn else ""
+        key = (fpath, path, method)
+        if key in seen:
+            continue
+        seen.add(key)
+        if _ID_PARAM.search(path) and not authed:
+            out.append({
+                "title": f"Possible Insecure Direct Object Reference / missing authorization on {method} {path}",
+                "severity": "medium",
+                "category": "Broken Access Control / IDOR (CWE-639, CWE-862)",
+                "location": f"{fpath}:{line}, function {fname}(), endpoint {method} {path}",
+                "evidence": f"The handler takes an object identifier from the URL ({path}) and performs the operation "
+                            f"without checking that the caller is authenticated or owns the object: `{deco.strip()[:120]}`",
+                "impact": "Any client can read, modify or delete other users' objects by iterating identifiers "
+                          "(horizontal privilege escalation, data exposure).",
+                "recommendation": "Require authentication and verify ownership/permissions of the referenced object "
+                                  "before acting on it; return 403/404 otherwise.",
+            })
+        elif method in ("POST", "PUT", "DELETE", "PATCH") and not authed:
+            out.append({
+                "title": f"Missing authentication on state-changing endpoint {method} {path}",
+                "severity": "medium",
+                "category": "Missing Authentication (CWE-306)",
+                "location": f"{fpath}:{line}, function {fname}(), endpoint {method} {path}",
+                "evidence": f"`{deco.strip()[:120]}` — no authentication dependency, token or session check in the handler.",
+                "impact": "Unauthenticated users can create, modify or delete data.",
+                "recommendation": "Protect the endpoint with authentication (and authorization for the affected resource).",
+            })
+        elif _SENSITIVE_PATH.search(path) and not authed:
+            out.append({
+                "title": f"Sensitive endpoint without authentication: {method} {path}",
+                "severity": "medium",
+                "category": "Missing Authentication (CWE-306)",
+                "location": f"{fpath}:{line}, function {fname}(), endpoint {method} {path}",
+                "evidence": f"`{deco.strip()[:120]}` — the handler has no authentication check.",
+                "impact": "Anyone can reach administrative or sensitive functionality.",
+                "recommendation": "Require authentication and an appropriate role for this endpoint.",
+            })
+        if re.search(r"SELECT\s+\*\s+FROM\s+users|password", handler, re.I) and "GET" == method and "user" in path:
+            out.append({
+                "title": f"Sensitive data exposure (password/credential fields) on {method} {path}",
+                "severity": "medium",
+                "category": "Sensitive Data Exposure (CWE-200)",
+                "location": f"{fpath}:{line}, function {fname}(), endpoint {method} {path}",
+                "evidence": "The handler selects user records including credential columns and may return them to the client.",
+                "impact": "Password hashes or plaintext passwords can be harvested from the API.",
+                "recommendation": "Select and return only the non-sensitive columns; never expose password fields.",
+            })
+    return [{k: f.get(k, "") for k in list(dict.fromkeys(list(fields) + list(f.keys())))} for f in out[:12]]
 
 
 def check_json_report(path, root, fields):
@@ -207,6 +315,34 @@ def check_kv(path, keys):
     except OSError as exc:
         return False, str(exc)
     return True, ""
+
+
+def kv_plausibility(values: dict, evidence_dir) -> str:
+    """Names of entity-like values (IPs, accounts, hosts, ids) that occur nowhere in
+    the evidence — almost always a hallucination or a copy error."""
+    if not evidence_dir or not Path(evidence_dir).is_dir():
+        return ""
+    corpus = []
+    total = 0
+    for p in brief.iter_files(Path(evidence_dir), limit=60):
+        try:
+            if p.stat().st_size > 40_000_000:
+                continue
+            corpus.append(p.read_text(encoding="utf-8", errors="replace"))
+            total += p.stat().st_size
+        except OSError:
+            continue
+        if total > 120_000_000:
+            break
+    blob = "\n".join(corpus)
+    bad = []
+    for k, v in values.items():
+        lk = k.lower()
+        if not any(t in lk for t in ("ip", "addr", "user", "account", "host", "subject", "principal", "actor", "request", "session", "hash", "domain", "email", "name")):
+            continue
+        if v and v not in blob:
+            bad.append(f"{k}={v}")
+    return ", ".join(bad)
 
 
 def write_kv(path, values: dict, keys):
@@ -611,7 +747,7 @@ def fallback_findings(hotspots, routes, fields):
     return findings
 
 
-def merge_report(path, root, fields, hotspots, routes, log=print):
+def merge_report(path, root, fields, hotspots, routes, log=print, workdir=None):
     """Union the model's report with high-confidence scan findings it did not mention."""
     obj = load_json_lenient(read_text(path))
     report, findings = normalise_report(obj, root, fields) if obj is not None else (None, None)
@@ -628,6 +764,14 @@ def merge_report(path, root, fields, hotspots, routes, log=print):
             continue
         findings.append({k: f.get(k, "") for k in dict.fromkeys(list(fields) + [k for k in f if k not in fields])})
         added += 1
+    if not re.search(r"idor|authoriz|authenticat|access control|broken access", text):
+        try:
+            extra = heuristic_findings(routes, workdir, fields) if workdir else []
+        except Exception:  # noqa: BLE001
+            extra = []
+        for f in extra[:6]:
+            findings.append(f)
+            added += 1
     if added:
         log(f"[oracle] merged {added} scan finding(s) into the report")
     report[root] = findings

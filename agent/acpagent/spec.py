@@ -174,9 +174,18 @@ def find_evidence_dir(text: str, workdir: Path) -> str:
     return ""
 
 
+_FENCED_CONTENT_RE = re.compile(
+    r"(?:with|containing|содержащ\w*|со следующим|с таким|с содержимым)\s+(?:(?:exactly|precisely|the following|this|следующ\w+|таким|точно|ровно)\s+)*"
+    r"(?:content|contents|text|содержим\w+|текст\w*)\s*:?\s*\n```[a-zA-Z0-9_-]*\n(.*?)```",
+    re.I | re.S,
+)
+
+
 def extract_exact_all(text: str):
     """Every (path, exact content) pair the statement pins down, in order."""
     matches = []
+    for cm in _FENCED_CONTENT_RE.finditer(text):
+        matches.append((cm.start(), cm.group(1)))
     for rx in _EXACT_CONTENT_RES:
         for cm in rx.finditer(text):
             matches.append((cm.start(), cm.group(1)))

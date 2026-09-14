@@ -336,6 +336,44 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
                     consider(x, f"{rel} (xor 0x{k:02x})")
         if len(found) > 20:
             break
+    # keys/passwords hidden in source: string constants (and joined list literals)
+    try:
+        cands = _string_constants(Path(root))
+        if cands:
+            small = []
+            for p in iter_files(Path(root), limit=max_files):
+                try:
+                    if 4 <= p.stat().st_size <= 65536 and p.suffix.lower() not in (".py", ".md", ".txt", ".json", ".yaml", ".yml", ".html", ".js"):
+                        small.append(p)
+                except OSError:
+                    continue
+            for p in small[:40]:
+                data = p.read_bytes()
+                rel = os.path.relpath(p, root)
+                for key in cands[:300]:
+                    kb = key.encode()
+                    x = bytes(b ^ kb[i % len(kb)] for i, b in enumerate(data))
+                    if b"{" in x and b"}" in x:
+                        consider(x, f"{rel} (xor key {key!r})")
+            # encrypted zip members
+            import zipfile
+            for p in iter_files(Path(root), limit=max_files):
+                if not p.name.lower().endswith(".zip"):
+                    continue
+                try:
+                    with zipfile.ZipFile(p) as zf:
+                        infos = [i for i in zf.infolist() if i.flag_bits & 0x1 and i.file_size < 2_000_000][:10]
+                        for info in infos:
+                            for key in cands[:300]:
+                                try:
+                                    consider(zf.read(info, pwd=key.encode()), f"{os.path.relpath(p, root)}:{info.filename} (password {key!r})")
+                                    break
+                                except Exception:  # noqa: BLE001
+                                    continue
+                except Exception:  # noqa: BLE001
+                    continue
+    except Exception:  # noqa: BLE001
+        pass
     # archive members and git history are where "hidden" flags usually sit
     try:
         for p in iter_files(Path(root), limit=max_files):
@@ -397,6 +435,45 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
             seen.add(v)
             uniq.append((v, s))
     return uniq[:12]
+
+
+_STR_LIT_RE = re.compile(r"""(?<![\w])(?:[rRbBuU]?)(['"])((?:\\.|(?!\1).){3,64})\1""")
+_LIST_LIT_RE = re.compile(r'''\[((?:\s*['"][^'"]{1,32}['"]\s*,?){2,12})\]''')
+
+
+def _string_constants(root: Path, max_files: int = 60):
+    """Short string literals in source files, plus joins of small string-list literals —
+    the places a challenge author leaves a key or a password."""
+    out = []
+    seen = set()
+    for p in iter_files(root, limit=max_files):
+        if p.suffix.lower() not in (".py", ".js", ".txt", ".md", ".sh", ".php", ".rb", ".go", ".c", ".java", ".json", ".yaml", ".yml", ".cfg", ".ini", ".env"):
+            continue
+        try:
+            if p.stat().st_size > 200_000:
+                continue
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in _STR_LIT_RE.finditer(text):
+            lit = m.group(2)
+            if "{" in lit or "\\" in lit or " " in lit.strip() and len(lit) > 24:
+                continue
+            if lit not in seen:
+                seen.add(lit)
+                out.append(lit)
+        for m in _LIST_LIT_RE.finditer(text):
+            parts = re.findall(r'''['"]([^'"]{1,32})['"]''', m.group(1))
+            for sep in ("", "-", "_", ":", " ", "."):
+                joined = sep.join(parts)
+                if 3 <= len(joined) <= 64 and joined not in seen:
+                    seen.add(joined)
+                    out.append(joined)
+        for m in re.finditer(r"(?:password|passwd|pass|key|secret|token)\s*[:=]\s*['\"]?([A-Za-z0-9_@#$%^&*!.-]{3,48})", text, re.I):
+            if m.group(1) not in seen:
+                seen.add(m.group(1))
+                out.append(m.group(1))
+    return out[:400]
 
 
 # ---- assembly -------------------------------------------------------------------------

@@ -76,6 +76,7 @@ class State:
         self.mechanical_notes = []
         self.seen_flags = []  # flag-shaped strings observed in tool outputs (ctf)
         self.call_history = []  # (tool, args) of every executed call, for retry notes
+        self.kv_plausibility_nudged = False
         self.retry_note = ""
 
 
@@ -287,6 +288,14 @@ def check_done(st: State, final_text: str):
             return ok, why
         if sp.kind == "kv_report":
             ok, why = oracle.check_kv(sp.deliverable, sp.keys)
+            if ok and not st.kv_plausibility_nudged:
+                found = oracle.parse_kv_text(oracle.read_text(sp.deliverable), sp.keys)
+                bad = oracle.kv_plausibility(found, sp.evidence_dir or str(st.workdir))
+                if bad:
+                    st.kv_plausibility_nudged = True
+                    return False, (f"these values do not occur anywhere in the evidence files: {bad}. "
+                                   "They must be copied verbatim from the records; re-check and correct them "
+                                   "(if you are certain they are right, write the file again and reply DONE).")
             if not ok and final_text:
                 found = oracle.salvage_kv_from_text(final_text, sp.keys)
                 if found and not any(v.lower() in oracle.PLACEHOLDERS for v in found.values()):
@@ -632,7 +641,7 @@ def finalize(st: State):
                     report = {sp.json_root: findings}
                 oracle.write_text(sp.deliverable, json.dumps(report, ensure_ascii=False, indent=2))
             oracle.merge_report(sp.deliverable, sp.json_root, sp.json_fields, st.brief.get("hotspots") or [],
-                                st.brief.get("routes") or [], log=log)
+                                st.brief.get("routes") or [], log=log, workdir=st.workdir)
         elif sp.kind == "kv_report":
             ok, why = oracle.check_kv(sp.deliverable, sp.keys)
             if not ok:
