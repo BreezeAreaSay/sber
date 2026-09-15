@@ -377,6 +377,239 @@ def _run(kind, path, arg, timeout=6):
         return b""
 
 
+# ---- AES / symmetric ciphertext -------------------------------------------------------
+
+_B64_BLOB = re.compile(rb"[A-Za-z0-9+/]{24,}={0,2}")
+_HEX_BLOB = re.compile(rb"(?:[0-9a-fA-F]{2}){16,}")
+_KV_STR = re.compile(r"""(?P<name>key|secret|passphrase|password|pass|iv|nonce|aes_key)\s*[:=]\s*['"]?(?P<val>[^'"\n]{3,120})""", re.I)
+
+
+def _maybe_decode(raw):
+    """A blob as raw bytes plus any base64/hex decodings of it that look like ciphertext."""
+    import base64
+    import binascii
+    out = [raw]
+    txt = raw.strip()
+    try:
+        if _B64_BLOB.fullmatch(txt.replace(b"\n", b"")):
+            d = base64.b64decode(txt + b"=" * (-len(txt) % 4), validate=False)
+            if len(d) >= 16:
+                out.append(d)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        if _HEX_BLOB.fullmatch(txt):
+            d = binascii.unhexlify(txt)
+            if len(d) >= 16:
+                out.append(d)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _ciphertexts(root: Path):
+    """(bytes, where) for every blob that could be AES ciphertext."""
+    import base64
+    import binascii
+    found = []
+    for p in brief.iter_files(root, limit=200):
+        try:
+            if not (16 <= p.stat().st_size <= 4_000_000):
+                continue
+            data = p.read_bytes()
+        except OSError:
+            continue
+        rel = str(p.name)
+        if b"\x00" in data[:2048] or not _looks_texty(data[:512]):
+            found.append((data, f"{rel} (raw bytes)"))
+        else:
+            text = data.decode("utf-8", "replace")
+            for m in _B64_BLOB.finditer(data):
+                try:
+                    d = base64.b64decode(m.group(0) + b"=" * (-len(m.group(0)) % 4), validate=False)
+                    if len(d) >= 16:
+                        found.append((d, f"{rel} (base64 blob)"))
+                except Exception:  # noqa: BLE001
+                    pass
+            for m in _HEX_BLOB.finditer(data):
+                try:
+                    d = binascii.unhexlify(m.group(0))
+                    if len(d) >= 16:
+                        found.append((d, f"{rel} (hex blob)"))
+                except Exception:  # noqa: BLE001
+                    pass
+        if len(found) >= 12:
+            break
+    return found
+
+
+def _looks_texty(chunk: bytes) -> bool:
+    if not chunk:
+        return False
+    printable = sum(1 for b in chunk if 9 <= b <= 13 or 32 <= b <= 126)
+    return printable / len(chunk) > 0.85
+
+
+def _key_material(root: Path):
+    """Candidate AES keys and IVs gathered from the files (raw, hex, base64, derived)."""
+    import base64
+    import binascii
+    import hashlib
+    keys, ivs, phrases = [], [], []
+    _, text = _collect(root)
+    for m in _KV_STR.finditer(text):
+        name, val = m.group("name").lower(), m.group("val").strip()
+        target_iv = name in ("iv", "nonce")
+        raws = []
+        for b in (val.encode(), *[d for d in (_try_hex(val), _try_b64(val)) if d]):
+            raws.append(b)
+        for b in raws:
+            if target_iv and len(b) in (8, 12, 16):
+                ivs.append(b)
+            elif not target_iv and len(b) in (16, 24, 32):
+                keys.append(b)
+        if not target_iv:
+            phrases.append(val)
+    # passphrases become keys through the usual derivations
+    for ph in phrases[:40]:
+        pb = ph.encode()
+        keys.append(hashlib.md5(pb).digest())            # 16
+        keys.append(hashlib.sha256(pb).digest())         # 32
+        keys.append(hashlib.sha1(pb).digest()[:16])      # 16
+        for n in (16, 24, 32):
+            keys.append(pb[:n].ljust(n, b"\0"))          # truncated / null-padded
+    # de-dup, keep order
+    def _uniq(xs):
+        seen, out = set(), []
+        for x in xs:
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+        return out
+    return _uniq(keys)[:60], _uniq(ivs + [b"\x00" * 16])[:8]
+
+
+def _try_hex(v):
+    import binascii
+    try:
+        return binascii.unhexlify(v) if re.fullmatch(r"[0-9a-fA-F]+", v) and len(v) % 2 == 0 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _try_b64(v):
+    import base64
+    try:
+        return base64.b64decode(v + "=" * (-len(v) % 4), validate=True) if re.fullmatch(r"[A-Za-z0-9+/=]+", v) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _unpad(b):
+    if b and 1 <= b[-1] <= 16 and b[-b[-1]:] == bytes([b[-1]]) * b[-1]:
+        return b[:-b[-1]]
+    return b
+
+
+def aes_recover(root: Path, prefix: str = ""):
+    """Decrypt an AES challenge whose key material sits in the files. (plaintext, how).
+
+    Uses the in-tree pure-Python AES so a missing or broken `cryptography` binding can
+    never take the CTF solver down with it."""
+    from acpagent import aes_pure
+    cts = _ciphertexts(root)
+    if not cts:
+        return []
+    keys, ivs = _key_material(root)
+    if not keys:
+        return []
+    out = []
+    tried = 0
+    for ct, where in cts:
+        for key in keys:
+            if len(key) not in (16, 24, 32):
+                continue
+            variants = [("ECB", None, ct)]
+            for iv in ivs:
+                if len(iv) == 16:
+                    variants.append(("CBC", iv, ct))
+                    variants.append(("CTR", iv, ct))
+            if len(ct) > 16:
+                variants.append(("CBC", ct[:16], ct[16:]))  # IV prefixed to the ciphertext
+                variants.append(("CTR", ct[:16], ct[16:]))
+            for mode_name, iv, body in variants:
+                if len(body) % 16 and mode_name != "CTR":
+                    continue
+                tried += 1
+                if tried > 6000:
+                    return out
+                try:
+                    if mode_name == "ECB":
+                        pt = aes_pure.decrypt_ecb(key, body)
+                    elif mode_name == "CBC":
+                        pt = aes_pure.decrypt_cbc(key, iv, body)
+                    else:
+                        pt = aes_pure.decrypt_ctr(key, iv, body)
+                except Exception:  # noqa: BLE001
+                    continue
+                for cand in (pt, _unpad(pt)):
+                    flag = _extract(cand, prefix)
+                    if flag:
+                        out.append((cand, f"AES-{mode_name} decrypt of {where} with a {len(key) * 8}-bit key from the files"))
+                        return out
+    return out
+
+
+# ---- a challenge served over a local port ----------------------------------------------
+
+_PORTS = (80, 3000, 5000, 8000, 8080, 8888, 9000, 9999, 1337, 4000, 7777)
+_PATHS = ("/", "/flag", "/flag.txt", "/index.html", "/robots.txt", "/admin", "/api/flag",
+          "/secret", "/.env", "/debug")
+
+
+def service_flags(root: Path, prefix: str = ""):
+    """Ask a service the challenge is running for its flag.
+
+    Some challenges put the answer behind a local HTTP endpoint rather than in a file;
+    the container is offline, so probing loopback is cheap and cannot reach anything
+    outside the task."""
+    import urllib.error
+    import urllib.request
+    seen = []
+    for port in _PORTS:
+        base = f"http://127.0.0.1:{port}"
+        try:
+            with urllib.request.urlopen(base + "/", timeout=1) as resp:
+                body = resp.read(200000)
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read(200000)
+            except Exception:  # noqa: BLE001
+                continue
+        except Exception:  # noqa: BLE001
+            continue  # nothing listening here
+        for path in _PATHS:
+            try:
+                with urllib.request.urlopen(base + path, timeout=1) as resp:
+                    data = resp.read(200000)
+            except urllib.error.HTTPError as exc:
+                try:
+                    data = exc.read(200000)
+                except Exception:  # noqa: BLE001
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            flag = _extract(data, prefix)
+            if flag:
+                return flag, f"fetched {base}{path} from the service the challenge is running"
+            seen.append(data)
+    for data in seen[:20]:
+        flag = _extract(data, prefix)
+        if flag:
+            return flag, "found in a response from a local service"
+    return None, ""
+
+
 def solve(root: Path, prefix: str = ""):
     """Return (flag, explanation) or (None, '')."""
     root = Path(root)
@@ -387,8 +620,21 @@ def solve(root: Path, prefix: str = ""):
                 return flag, how
     except Exception:  # noqa: BLE001
         pass
+    try:
+        for plain, how in aes_recover(root, prefix):
+            flag = _extract(plain, prefix)
+            if flag:
+                return flag, how
+    except Exception:  # noqa: BLE001
+        pass
     progs = _gated_programs(root)
     if not progs:
+        try:
+            flag, how = service_flags(root, prefix)
+            if flag:
+                return flag, how
+        except Exception:  # noqa: BLE001
+            pass
         return None, ""
     pw, digest, algo = recover_password(root)
     tried = []
@@ -420,6 +666,12 @@ def solve(root: Path, prefix: str = ""):
                        f"ran {path.name} {cand!r} which printed the flag") if pw is not None else \
                       f"ran {path.name} with candidate password {cand!r}, which printed the flag"
                 return flag, how
+    try:
+        flag, how = service_flags(root, prefix)
+        if flag:
+            return flag, how
+    except Exception:  # noqa: BLE001
+        pass
     return None, ""
 
 

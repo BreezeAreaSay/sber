@@ -672,6 +672,11 @@ def flag_candidates(root: Path, prefix: str = "", max_files: int = 400, max_byte
                 consider(_pdf_text(p), f"{os.path.relpath(p, root)} (pdf streams)")
             elif low.endswith(".png"):
                 consider(_png_lsb(p), f"{os.path.relpath(p, root)} (png LSB stego)")
+                consider(_appended_data(p), f"{os.path.relpath(p, root)} (data appended after the image)")
+            elif low.endswith((".wav", ".wave")):
+                consider(_wav_lsb(p), f"{os.path.relpath(p, root)} (wav LSB stego)")
+            elif low.endswith((".jpg", ".jpeg", ".gif")):
+                consider(_appended_data(p), f"{os.path.relpath(p, root)} (data appended after the image)")
         git_dir = Path(root) / ".git"
         if git_dir.is_dir():
             try:
@@ -831,6 +836,78 @@ def xor_break_repeating(data: bytes, max_keylen: int = 40, top_lengths: int = 4)
             shown = bytes(key).hex()
         out.append((plain, f"xor key {shown!r} recovered by frequency analysis"))
     return out
+
+
+def _wav_lsb(p: Path) -> bytes:
+    """Least-significant-bit payload of a WAV file, parsed from the RIFF chunks."""
+    import struct
+    try:
+        data = p.read_bytes()
+    except OSError:
+        return b""
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return b""
+    pos, bits_per_sample, payload = 12, 16, b""
+    while pos + 8 <= len(data):
+        cid = data[pos:pos + 4]
+        size = struct.unpack("<I", data[pos + 4:pos + 8])[0]
+        body = data[pos + 8:pos + 8 + size]
+        if cid == b"fmt " and len(body) >= 16:
+            bits_per_sample = struct.unpack("<H", body[14:16])[0]
+        elif cid == b"data":
+            payload = body
+            break
+        pos += 8 + size + (size & 1)
+    if not payload:
+        return b""
+    step = max(1, bits_per_sample // 8)
+    bits = [payload[i] & 1 for i in range(0, min(len(payload), 4_000_000), step)]
+    out = bytearray()
+    for j in range(0, len(bits) - 7, 8):
+        byte = 0
+        for k in range(8):
+            byte = (byte << 1) | bits[j + k]
+        out.append(byte)
+    return bytes(out)[:200_000]
+
+
+_IMG_END = ((b"\x89PNG", b"IEND\xaeB`\x82"), (b"\xff\xd8\xff", b"\xff\xd9"), (b"GIF8", b"\x00;"))
+
+
+def _appended_data(p: Path) -> bytes:
+    """Whatever was concatenated after an image's real end marker.
+
+    Hiding an archive behind a picture is one of the oldest tricks there is, and the
+    bytes never show up in the image itself."""
+    try:
+        data = p.read_bytes()
+    except OSError:
+        return b""
+    for magic, end in _IMG_END:
+        if not data.startswith(magic):
+            continue
+        idx = data.rfind(end)
+        if idx == -1:
+            continue
+        tail = data[idx + len(end):]
+        if len(tail) < 8:
+            return b""
+        if tail[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
+            import io
+            import zipfile
+            out = [tail]
+            try:
+                with zipfile.ZipFile(io.BytesIO(tail)) as zf:
+                    for name in zf.namelist()[:20]:
+                        try:
+                            out.append(zf.read(name))
+                        except Exception:  # noqa: BLE001
+                            continue
+            except Exception:  # noqa: BLE001
+                pass
+            return b"\n".join(out)[:2_000_000]
+        return tail[:2_000_000]
+    return b""
 
 
 def _is_sqlite(p: Path) -> bool:

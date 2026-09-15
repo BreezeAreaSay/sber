@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acpagent import brief, ctf_gate, forensic_seed, hardenfix, kv_seed, kv_verify, oracle, prompts, safefix, sqlfix, tools, vulnreport  # noqa: E402
+from acpagent import brief, ctf_gate, forensic_seed, hardenfix, kv_seed, kv_verify, narrative, oracle, prompts, safefix, sqlfix, tools, vulnreport  # noqa: E402
 from acpagent import spec as specmod  # noqa: E402
 from acpagent.llm import (LLM, BudgetExceeded, ContextTooLong, ToolCall, ToolsUnsupported,  # noqa: E402
                           estimate_tokens, parse_arguments)
@@ -84,6 +84,7 @@ class State:
         self.seed_partial = None  # high-confidence values for some keys only
         self.report_seeded = 0    # findings in the draft report written before the model
         self.report_gaps = []     # weaknesses our own audit found in that draft
+        self.narrative_written = 0  # chars of the prose incident report we composed
         self.final_text = ""
         self.finalized = False
         self.deadline_ts = START_TS + SOFT_DEADLINE_SEC
@@ -898,6 +899,21 @@ def telemetry(st: State):
 
 # ---- entry -----------------------------------------------------------------------------------
 
+_REPORT_NAME_RE = re.compile(r"(?:report|incident|findings|analysis|summary|writeup|conclusion)", re.I)
+
+
+def _report_like(path: str, instruction: str) -> bool:
+    """A free-form written deliverable, as opposed to a flag or a data file."""
+    name = os.path.basename(path or "").lower()
+    if not name.endswith((".md", ".txt", ".markdown", ".rst")):
+        return False
+    if _REPORT_NAME_RE.search(name):
+        return True
+    low = (instruction or "").lower()
+    return any(w in low for w in ("incident", "report", "what happened", "describe", "summaris", "summariz",
+                                  "инцидент", "отчёт", "отчет", "опишите", "что произошло"))
+
+
 def blind_fallback(st: State):
     """No statement reached us by any route: leave what each family would be graded on.
 
@@ -1035,6 +1051,19 @@ def run(st: State):
     st.brief = brief.build(sp, st.workdir, log=log)
     log(f"briefing: {len(st.brief.get('text', ''))} chars, {len(st.brief.get('hotspots') or [])} hotspots, "
         f"{len(st.brief.get('routes') or [])} routes")
+    if sp.kind == "generic" and sp.deliverable and _report_like(sp.deliverable, st.instruction):
+        # A forensics task that asks for prose rather than key=value lands here. Compose
+        # the report from the same profiles the key=value seed uses, so the deliverable
+        # exists before the model runs and survives a model that never answers.
+        try:
+            evidence = Path(sp.evidence_dir) if sp.evidence_dir else st.workdir
+            md = narrative.build(evidence, st.instruction)
+            if md:
+                oracle.write_text(sp.deliverable, md)
+                st.narrative_written = len(md)
+                log(f"narrative incident report written to {sp.deliverable} ({len(md)} chars) from the log profiles")
+        except Exception as exc:  # noqa: BLE001
+            log(f"narrative report failed: {exc}")
     if sp.kind == "json_report" and sp.deliverable:
         # A complete, code-derived report exists before the first model call, so the task
         # already has a valid graded artifact and the model only has to improve it.

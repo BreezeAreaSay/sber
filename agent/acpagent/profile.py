@@ -35,7 +35,7 @@ _SSH_EVENT_RE = re.compile(
 )
 _SSH_USER_RE = re.compile(r"\bfor (?:invalid user )?(?P<user>[A-Za-z0-9_.@-]+) from (?P<ip>(?:\d{1,3}\.){3}\d{1,3})")
 _SSH_USER2_RE = re.compile(r"\buser[= ](?P<user>[A-Za-z0-9_.@-]+)|\brhost=(?P<ip>(?:\d{1,3}\.){3}\d{1,3})")
-_CLF_RE = re.compile(r'^(?P<ip>\S+) \S+ (?P<auth>\S+) \[(?P<ts>[^\]]+)\] "(?P<method>[A-Z]+) (?P<path>\S+)[^"]*" (?P<status>\d{3}) (?P<size>\d+|-)')
+_CLF_RE = re.compile(r'^(?P<ip>\S+) \S+ (?P<auth>\S+) \[(?P<ts>[^\]]+)\] "(?P<method>[A-Z]+) (?P<path>\S+)[^"]*" (?P<status>\d{3}|-) (?P<size>\d+|-)')
 _XFF_RE = re.compile(r'xff="([^"]*)"|X-Forwarded-For:\s*([^\s"]+(?:,\s*[^\s"]+)*)', re.I)
 _SUSPICIOUS = re.compile(r"\.\./|%2e%2e|union\s+select|'\s*or\s*'|%27|<script|/etc/passwd|cmd=|;\s*(?:id|ls|cat|whoami)\b|\$\(|`|sleep\(|benchmark\(|/wp-admin|/\.git|/\.env|passwd|shadow", re.I)
 # attack payloads outrank generic scanner noise when picking what to show
@@ -655,8 +655,185 @@ def is_windows_log(text: str) -> bool:
     return bool(_WIN_EVENT_RE.search(head) and _WIN_EVENTID_RE.search(head))
 
 
+# ---- packet captures -------------------------------------------------------------------
+
+_PCAP_MAGIC = (b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d")
+_PCAPNG_MAGIC = b"\x0a\x0d\x0d\x0a"
+_HTTP_REQ = re.compile(rb"^(?P<method>GET|POST|PUT|DELETE|HEAD|PATCH|OPTIONS) (?P<path>\S+) HTTP/1\.[01]\r?\n")
+_HTTP_HOST = re.compile(rb"\r\nHost:\s*([^\r\n]+)", re.I)
+_HTTP_AUTH = re.compile(rb"\r\nAuthorization:\s*([^\r\n]+)", re.I)
+_HTTP_STATUS = re.compile(rb"^HTTP/1\.[01] (\d{3})")
+
+
+def _pcap_packets(data: bytes):
+    """(epoch seconds, payload-bearing IP tuple) for each packet, pcap and pcapng."""
+    import struct
+    if data[:4] in _PCAP_MAGIC:
+        swap = "<" if data[:4] in (b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1") else ">"
+        nano = data[:4] in (b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d")
+        linktype = struct.unpack(swap + "I", data[20:24])[0]
+        pos = 24
+        while pos + 16 <= len(data):
+            ts_sec, ts_frac, caplen, _orig = struct.unpack(swap + "IIII", data[pos:pos + 16])
+            pos += 16
+            frame = data[pos:pos + caplen]
+            pos += caplen
+            if len(frame) < caplen:
+                break
+            yield ts_sec + (ts_frac / 1e9 if nano else ts_frac / 1e6), linktype, frame
+    elif data[:4] == _PCAPNG_MAGIC:
+        pos = 0
+        linktype = 1
+        endian = "<"
+        while pos + 12 <= len(data):
+            btype = struct.unpack(endian + "I", data[pos:pos + 4])[0]
+            blen = struct.unpack(endian + "I", data[pos + 4:pos + 8])[0]
+            if blen < 12 or pos + blen > len(data):
+                break
+            body = data[pos + 8:pos + blen - 4]
+            if btype == 0x0A0D0D0A and len(body) >= 4:
+                endian = "<" if body[:4] == b"\x4d\x3c\x2b\x1a" else ">"
+            elif btype == 1 and len(body) >= 2:
+                linktype = struct.unpack(endian + "H", body[:2])[0]
+            elif btype == 6 and len(body) >= 20:
+                ts_hi, ts_lo, caplen = struct.unpack(endian + "III", body[4:16])
+                ts = ((ts_hi << 32) | ts_lo) / 1e6
+                yield ts, linktype, body[20:20 + caplen]
+            pos += blen
+
+
+def _ip_tuple(frame: bytes, linktype: int):
+    import struct
+    off = 14 if linktype == 1 else (4 if linktype == 0 else 0)
+    if linktype == 1 and len(frame) >= 14:
+        if struct.unpack(">H", frame[12:14])[0] != 0x0800:
+            return None
+    if len(frame) < off + 20:
+        return None
+    ip = frame[off:]
+    if (ip[0] >> 4) != 4:
+        return None
+    ihl = (ip[0] & 0x0F) * 4
+    proto = ip[9]
+    src = ".".join(str(b) for b in ip[12:16])
+    dst = ".".join(str(b) for b in ip[16:20])
+    rest = ip[ihl:]
+    if proto == 6 and len(rest) >= 20:
+        sport, dport = struct.unpack(">HH", rest[0:4])
+        doff = (rest[12] >> 4) * 4
+        return src, dst, sport, dport, "tcp", rest[doff:]
+    if proto == 17 and len(rest) >= 8:
+        sport, dport = struct.unpack(">HH", rest[0:4])
+        return src, dst, sport, dport, "udp", rest[8:]
+    return None
+
+
+def pcap_facts(path: Path):
+    """Per-client facts from the HTTP traffic in a capture, shaped like an access log.
+
+    A capture answers the same questions an access log does — who asked for what and
+    when — so rendering its requests as access records lets the existing seed, profile
+    and verification code read a pcap without knowing anything about packets."""
+    from datetime import datetime, timezone as _tz
+    try:
+        if path.stat().st_size > 60_000_000:
+            return None
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if data[:4] not in _PCAP_MAGIC and data[:4] != _PCAPNG_MAGIC:
+        return None
+    per_ip, notes, lines = {}, [], []
+    pending = {}   # client ip -> [(index into its parsed list, its record)]
+    for ts, linktype, frame in _pcap_packets(data):
+        tup = _ip_tuple(frame, linktype)
+        if not tup:
+            continue
+        src, dst, sport, dport, proto, payload = tup
+        if not payload:
+            continue
+        if proto == "udp" and dport == 53 and len(payload) > 12:
+            try:
+                qname, pos = [], 12
+                while pos < len(payload) and payload[pos]:
+                    ln = payload[pos]
+                    qname.append(payload[pos + 1:pos + 1 + ln].decode("ascii", "replace"))
+                    pos += ln + 1
+                if qname:
+                    notes.append(f"DNS query from {src}: {'.'.join(qname)}")
+            except Exception:  # noqa: BLE001
+                pass
+            continue
+        st = _HTTP_STATUS.match(payload)
+        if st:
+            # a reply travels server -> client, so dst identifies who asked
+            waiting = pending.get(dst)
+            if waiting:
+                idx, holder = waiting.pop(0)
+                holder["parsed"][idx]["status"] = st.group(1).decode()
+                old_line = holder["parsed"][idx]["line"]
+                new_line = old_line.replace('" - -', '" %s -' % st.group(1).decode())
+                holder["parsed"][idx]["line"] = new_line
+                for coll in (holder["lines"],):
+                    for j, v in enumerate(coll):
+                        if v == old_line:
+                            coll[j] = new_line
+                if holder.get("first_sus") == old_line:
+                    holder["first_sus"] = new_line
+                if holder.get("first") == old_line:
+                    holder["first"] = new_line
+                if holder.get("last") == old_line:
+                    holder["last"] = new_line
+                if st.group(1).startswith(b"2") and holder.get("first_sus_ok") is None \
+                        and _SUSPICIOUS.search(holder["parsed"][idx]["path"]):
+                    holder["first_sus_ok"] = new_line
+                if st.group(1)[:1] in (b"4", b"5"):
+                    holder["err"] += 1
+            continue
+        m = _HTTP_REQ.match(payload)
+        if not m:
+            continue
+        method = m.group("method").decode()
+        req_path = m.group("path").decode("ascii", "replace")
+        stamp = datetime.fromtimestamp(ts, _tz.utc).strftime("%d/%b/%Y:%H:%M:%S +0000")
+        line = f'{src} - - [{stamp}] "{method} {req_path} HTTP/1.1" - -'
+        lines.append(line)
+        auth = _HTTP_AUTH.search(payload)
+        if auth:
+            notes.append(f"HTTP Authorization header sent in clear by {src}: {auth.group(1).decode('ascii', 'replace')[:80]}")
+        rec = per_ip.setdefault(src, {"n": 0, "err": 0, "sus": 0, "first": None, "last": None, "paths": Counter(),
+                                      "bytes": 0, "users": Counter(), "first_sus": None, "first_sus_ok": None,
+                                      "severe": 0, "lines": [], "parsed": []})
+        rec["n"] += 1
+        rec["lines"].append(line)
+        rec["parsed"].append({"method": method, "path": req_path, "status": "-", "size": "-", "line": line})
+        if _SUSPICIOUS.search(req_path):
+            rec["sus"] += 1
+            if _SEVERE.search(req_path):
+                rec["severe"] += 1
+            if rec["first_sus"] is None:
+                rec["first_sus"] = line
+        rec["paths"][f"{method} {req_path[:60]}"] += 1
+        rec["first"] = rec["first"] or line
+        rec["last"] = line
+        pending.setdefault(src, []).append((len(rec["parsed"]) - 1, rec))
+    if not per_ip:
+        return None
+    for rec in per_ip.values():
+        rec["lines"] = [q["line"] for q in rec["parsed"]]
+    lines = [q["line"] for rec in per_ip.values() for q in rec["parsed"]]
+    return {"per_ip": per_ip, "xff": Counter(), "suspicious": [], "tz": None, "label": "UTC", "year": None,
+            "notes": notes, "lines": lines}
+
+
 def file_facts(p: Path):
     """Structured facts of one evidence file (None when it is not a recognised log)."""
+    if p.suffix.lower() in (".pcap", ".pcapng", ".cap"):
+        facts = pcap_facts(p)
+        if facts is not None:
+            facts.update({"path": p, "kind": "access", "lines": facts.get("lines") or []})
+            return facts
+        return None
     loaded = load_logical(p)
     if loaded is None:
         return None
@@ -699,12 +876,13 @@ def file_facts(p: Path):
 def dir_facts(root: Path, limit_files: int = 30):
     out = []
     for p in sorted(x for x in Path(root).rglob("*") if x.is_file() and not x.name.startswith("."))[:limit_files]:
-        try:
-            with p.open("rb") as fh:
-                if b"\x00" in fh.read(2048):
-                    continue
-        except OSError:
-            continue
+        if p.suffix.lower() not in (".pcap", ".pcapng", ".cap"):
+            try:
+                with p.open("rb") as fh:
+                    if b"\x00" in fh.read(2048):
+                        continue
+            except OSError:
+                continue
         f = file_facts(p)
         if f and (f.get("per_ip") or f.get("per_subject")):
             out.append(f)
@@ -712,6 +890,16 @@ def dir_facts(root: Path, limit_files: int = 30):
 
 
 def profile_file(p: Path, max_chars: int = 2600) -> str:
+    if p.suffix.lower() in (".pcap", ".pcapng", ".cap"):
+        facts = pcap_facts(p)
+        if not facts:
+            return ""
+        text = access_profile(facts.get("lines") or [], None, "UTC", None)
+        notes = facts.get("notes") or []
+        if notes:
+            text += "\nnoted in the capture:\n  " + "\n  ".join(dict.fromkeys(notes))
+        return ("HTTP requests carried in this capture, rendered as access records "
+                "(packet timestamps are UTC):\n" + text)[:max_chars]
     loaded = load_logical(p)
     if loaded is None:
         return ""
@@ -762,12 +950,13 @@ def profile_dir(root: Path, max_total: int = 9000) -> str:
     out = []
     total = 0
     for p in sorted(x for x in root.rglob("*") if x.is_file() and not x.name.startswith("."))[:30]:
-        try:
-            with p.open("rb") as fh:
-                if b"\x00" in fh.read(2048):
-                    continue
-        except OSError:
-            continue
+        if p.suffix.lower() not in (".pcap", ".pcapng", ".cap"):
+            try:
+                with p.open("rb") as fh:
+                    if b"\x00" in fh.read(2048):
+                        continue
+            except OSError:
+                continue
         t = profile_file(p)
         if not t:
             continue
