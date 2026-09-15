@@ -204,5 +204,32 @@ def self_check(report, root: str, instruction: str = ""):
     return problems
 
 
+def to_markdown(report, root: str) -> str:
+    """The same findings as a written report, for a task that asks for prose."""
+    findings = (report or {}).get(root or "findings") or []
+    out = ["# Security audit report", "",
+           f"{len(findings)} issue(s) found, most severe first.", ""]
+    for i, f in enumerate(findings, 1):
+        sev = str(f.get("severity", "")).upper() or "UNSPECIFIED"
+        out.append(f"## {i}. {f.get('title', 'Finding')} [{sev}]")
+        out.append("")
+        shown = {"title", "severity"}
+        for key in ("category", "cwe", "location", "file", "line", "evidence", "description",
+                    "detail", "details", "impact", "recommendation", "remediation", "fix"):
+            val = str(f.get(key, "")).strip()
+            if val:
+                out.append(f"- **{key.capitalize()}:** {val}")
+            shown.add(key)
+        # whatever else the task asked for, rather than dropping it on the floor
+        for key, val in f.items():
+            if key in shown:
+                continue
+            text = ", ".join(str(v) for v in val) if isinstance(val, (list, tuple)) else str(val)
+            if text.strip():
+                out.append(f"- **{key.capitalize()}:** {text.strip()}")
+        out.append("")
+    return "\n".join(out)
+
+
 def write(path, report):
     oracle.write_text(path, json.dumps(report, ensure_ascii=False, indent=2))

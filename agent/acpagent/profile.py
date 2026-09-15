@@ -665,6 +665,86 @@ _HTTP_AUTH = re.compile(rb"\r\nAuthorization:\s*([^\r\n]+)", re.I)
 _HTTP_STATUS = re.compile(rb"^HTTP/1\.[01] (\d{3})")
 
 
+_EVTX_MAGIC = b"ElfFile\x00"
+_EVTX_REC = b"\x2a\x2a\x00\x00"
+_U16_RUN = re.compile(rb"(?:[\x20-\x7e]\x00){4,}")
+
+
+def evtx_readable(path: Path, max_items: int = 400):
+    """Readable strings out of a binary Windows event log.
+
+    The record bodies are binary XML, which this does not pretend to decode. What it does
+    is recover the text those records carry — account names, addresses, channel and
+    provider names — together with each record's timestamp, so binary evidence stops
+    being a blank wall for both the briefing and the model."""
+    from datetime import datetime, timedelta, timezone as _tz
+    import struct
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if not data.startswith(_EVTX_MAGIC):
+        return None
+    records = []
+    pos = 0
+    while len(records) < max_items:
+        idx = data.find(_EVTX_REC, pos)
+        if idx == -1:
+            break
+        pos = idx + 4
+        try:
+            filetime = struct.unpack("<Q", data[idx + 16:idx + 24])[0]
+            size = struct.unpack("<I", data[idx + 4:idx + 8])[0]
+        except struct.error:
+            continue
+        when = ""
+        if 116444736000000000 < filetime < 160000000000000000:
+            try:
+                when = (datetime(1601, 1, 1, tzinfo=_tz.utc)
+                        + timedelta(microseconds=filetime // 10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except Exception:  # noqa: BLE001
+                when = ""
+        body = data[idx:idx + min(max(size, 64), 65536)]
+        texts = []
+        for m in _U16_RUN.finditer(body):
+            try:
+                t = m.group(0).decode("utf-16-le").strip()
+            except UnicodeDecodeError:
+                continue
+            if len(t) >= 3 and t not in texts:
+                texts.append(t)
+        if texts:
+            records.append((when, texts))
+    if not records:
+        return None
+    return records
+
+
+def evtx_profile(path: Path, max_chars: int = 2400) -> str:
+    recs = evtx_readable(path)
+    if not recs:
+        return ""
+    ips, accounts = Counter(), Counter()
+    for _when, texts in recs:
+        for t in texts:
+            for m in _IPV4.finditer(t):
+                if not _is_private(m.group(0)):
+                    ips[m.group(0)] += 1
+            if re.fullmatch(r"[A-Za-z][\w.$-]{2,32}", t) and not t.lower().endswith((".dll", ".exe", ".xml")):
+                accounts[t] += 1
+    out = [f"binary Windows event log: {len(recs)} records recovered as text "
+           "(record bodies are binary XML and are not decoded here)"]
+    if ips:
+        out.append("public addresses seen in the records: " + ", ".join(f"{k} ({c})" for k, c in ips.most_common(8)))
+    if accounts:
+        out.append("frequent name-like strings (accounts, hosts, providers): "
+                   + ", ".join(f"{k} ({c})" for k, c in accounts.most_common(10)))
+    out.append("first records:")
+    for when, texts in recs[:6]:
+        out.append(f"  {when or '(no timestamp)'}  " + " | ".join(texts[:8])[:200])
+    return "\n".join(out)[:max_chars]
+
+
 def _pcap_packets(data: bytes):
     """(epoch seconds, payload-bearing IP tuple) for each packet, pcap and pcapng."""
     import struct
@@ -890,6 +970,8 @@ def dir_facts(root: Path, limit_files: int = 30):
 
 
 def profile_file(p: Path, max_chars: int = 2600) -> str:
+    if p.suffix.lower() in (".evtx",) or _starts_with(p, _EVTX_MAGIC):
+        return evtx_profile(p, max_chars)
     if p.suffix.lower() in (".pcap", ".pcapng", ".cap"):
         facts = pcap_facts(p)
         if not facts:
@@ -945,12 +1027,20 @@ def profile_file(p: Path, max_chars: int = 2600) -> str:
     return "\n".join(parts)[:max_chars]
 
 
+def _starts_with(p: Path, magic: bytes) -> bool:
+    try:
+        with p.open("rb") as fh:
+            return fh.read(len(magic)) == magic
+    except OSError:
+        return False
+
+
 def profile_dir(root: Path, max_total: int = 9000) -> str:
     root = Path(root)
     out = []
     total = 0
     for p in sorted(x for x in root.rglob("*") if x.is_file() and not x.name.startswith("."))[:30]:
-        if p.suffix.lower() not in (".pcap", ".pcapng", ".cap"):
+        if p.suffix.lower() not in (".pcap", ".pcapng", ".cap", ".evtx") and not _starts_with(p, _EVTX_MAGIC):
             try:
                 with p.open("rb") as fh:
                     if b"\x00" in fh.read(2048):

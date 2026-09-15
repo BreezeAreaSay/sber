@@ -567,16 +567,54 @@ _PATHS = ("/", "/flag", "/flag.txt", "/index.html", "/robots.txt", "/admin", "/a
           "/secret", "/.env", "/debug")
 
 
-def service_flags(root: Path, prefix: str = ""):
+_SERVICE_CUE = re.compile(
+    r"https?://|127\.0\.0\.1|localhost|\bport\b|\bcurl\b|\bserver\b|\blisten|\bsocket\b|"
+    r"\bendpoint\b|\bhttp\b|flask|uvicorn|http\.server|:\d{4}\b", re.I)
+
+
+def _points_at_service(root: Path, instruction: str = "") -> bool:
+    """Does this challenge actually involve a service?
+
+    Loopback is shared with whatever else the task container runs — an application under
+    test, a fixture, another task's leftovers. A flag-shaped string from an unrelated
+    service is not this challenge's answer, so the probe only runs when the statement or
+    the challenge material points at one."""
+    if _SERVICE_CUE.search(instruction or ""):
+        return True
+    import time
+    stop = time.monotonic() + 5
+    try:
+        for p in list(Path(root).rglob("*"))[:400]:
+            if time.monotonic() > stop:
+                break
+            if not p.is_file() or p.stat().st_size > 400000:
+                continue
+            if _SERVICE_CUE.search(p.read_text(errors="replace")[:20000]):
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def service_flags(root: Path, prefix: str = "", instruction: str = ""):
     """Ask a service the challenge is running for its flag.
 
     Some challenges put the answer behind a local HTTP endpoint rather than in a file;
     the container is offline, so probing loopback is cheap and cannot reach anything
-    outside the task."""
+    outside the task. It is still only asked when the challenge points at a service, and
+    only after every decoder that works on the challenge's own files has come up empty."""
+    import time
     import urllib.error
     import urllib.request
+    if not _points_at_service(root, instruction):
+        return None, ""
+    # The trivial tier allows 120s in total, so a probe that finds nothing must not be able
+    # to eat the budget: every unanswered port costs its timeout, and there are many.
+    stop = time.monotonic() + 20
     seen = []
     for port in _PORTS:
+        if time.monotonic() > stop:
+            break
         base = f"http://127.0.0.1:{port}"
         try:
             with urllib.request.urlopen(base + "/", timeout=1) as resp:
@@ -589,6 +627,8 @@ def service_flags(root: Path, prefix: str = ""):
         except Exception:  # noqa: BLE001
             continue  # nothing listening here
         for path in _PATHS:
+            if time.monotonic() > stop:
+                break
             try:
                 with urllib.request.urlopen(base + path, timeout=1) as resp:
                     data = resp.read(200000)
@@ -610,8 +650,12 @@ def service_flags(root: Path, prefix: str = ""):
     return None, ""
 
 
-def solve(root: Path, prefix: str = ""):
-    """Return (flag, explanation) or (None, '')."""
+def solve(root: Path, prefix: str = "", instruction: str = "", allow_service: bool = False):
+    """Return (flag, explanation) or (None, '').
+
+    `allow_service` is off by default so that a flag served on loopback can never outrank
+    one recovered from the challenge's own material; the caller re-runs with it on once
+    the file-based decoders have all failed."""
     root = Path(root)
     try:
         for plain, how in rsa_recover(root, prefix):
@@ -629,12 +673,13 @@ def solve(root: Path, prefix: str = ""):
         pass
     progs = _gated_programs(root)
     if not progs:
-        try:
-            flag, how = service_flags(root, prefix)
-            if flag:
-                return flag, how
-        except Exception:  # noqa: BLE001
-            pass
+        if allow_service:
+            try:
+                flag, how = service_flags(root, prefix, instruction)
+                if flag:
+                    return flag, how
+            except Exception:  # noqa: BLE001
+                pass
         return None, ""
     pw, digest, algo = recover_password(root)
     tried = []
@@ -666,12 +711,13 @@ def solve(root: Path, prefix: str = ""):
                        f"ran {path.name} {cand!r} which printed the flag") if pw is not None else \
                       f"ran {path.name} with candidate password {cand!r}, which printed the flag"
                 return flag, how
-    try:
-        flag, how = service_flags(root, prefix)
-        if flag:
-            return flag, how
-    except Exception:  # noqa: BLE001
-        pass
+    if allow_service:
+        try:
+            flag, how = service_flags(root, prefix, instruction)
+            if flag:
+                return flag, how
+        except Exception:  # noqa: BLE001
+            pass
     return None, ""
 
 

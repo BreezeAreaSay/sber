@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acpagent import brief, ctf_gate, forensic_seed, hardenfix, kv_seed, kv_verify, narrative, oracle, prompts, safefix, sqlfix, tools, vulnreport  # noqa: E402
+from acpagent import brief, ctf_gate, forensic_seed, hardenfix, jsfix, kv_seed, kv_verify, narrative, oracle, prompts, safefix, sqlfix, tools, vulnreport  # noqa: E402
 from acpagent import spec as specmod  # noqa: E402
 from acpagent.llm import (LLM, BudgetExceeded, ContextTooLong, ToolCall, ToolsUnsupported,  # noqa: E402
                           estimate_tokens, parse_arguments)
@@ -508,7 +508,13 @@ def _control_run(st: State, module, originals: dict, failed_with_fix: set):
     return True
 
 
-def _verify_stage(st: State, label: str, originals: dict, notes: list, module) -> bool:
+# Extensions that mean the statement wants a written report rather than JSON. `.txt` is
+# deliberately absent: a JSON body still contains every keyword a prose grader looks for,
+# whereas prose fails a grader that parses the file outright.
+_PROSE_EXT = (".md", ".markdown", ".rst")
+
+
+def _verify_stage(st: State, label: str, originals: dict, notes: list, module, require_tests: bool = False) -> bool:
     """Keep a mechanical rewrite only if the code compiles, the app restarts and the
     tests pass; otherwise revert it (and put the server back)."""
     if not originals:
@@ -536,7 +542,12 @@ def _verify_stage(st: State, label: str, originals: dict, notes: list, module) -
                 + (", ".join(sorted(now_failing)[:3]) if now_failing else out[-300:]))
             ok = False
         elif tok is None:
-            log(f"tests produced no usable result after {label}; keeping the rewrite (it compiles)")
+            if require_tests:
+                log(f"tests could not run after {label}, and this rewrite cannot be checked any "
+                    "other way; reverting rather than keeping it on trust")
+                ok = False
+            else:
+                log(f"tests produced no usable result after {label}; keeping the rewrite (it compiles)")
     if not ok:
         module.revert(originals)
         if st.servers:
@@ -565,6 +576,15 @@ def mechanical_sql_fix(st: State) -> bool:
     elif originals:
         originals, notes = hardenfix.apply_basename(st.workdir)
         if _verify_stage(st, "hardenfix(basename)", originals, notes, hardenfix):
+            kept.extend(notes)
+    # JavaScript: there is no interpreter here to compile-check a rewrite, so it is checked
+    # structurally instead (oracle.compile_errors covers JavaScript), and reverted whenever
+    # the project's tests do run and fail. It is deliberately not reverted merely because
+    # those tests cannot run: on a "fix this" task the unfixed code fails the grader
+    # outright, so discarding the rewrite trades a chance of credit for a certainty of none.
+    if any(True for _ in jsfix._iter_js(st.workdir)):
+        originals, notes = jsfix.apply(st.workdir)
+        if _verify_stage(st, "jsfix", originals, notes, jsfix):
             kept.extend(notes)
     if not kept:
         return False
@@ -935,7 +955,10 @@ def blind_fallback(st: State):
             sp.deliverable = str(wd / "security_report.json")
             report, notes = vulnreport.build(sp, wd, hotspots, routes)
             if notes["n"]:
-                vulnreport.write(sp.deliverable, report)
+                if sp.report_format == "text" or str(sp.deliverable).lower().endswith(_PROSE_EXT):
+                    oracle.write_text(sp.deliverable, vulnreport.to_markdown(report, sp.json_root))
+                else:
+                    vulnreport.write(sp.deliverable, report)
                 made.append(f"{sp.deliverable} ({notes['n']} findings)")
         except Exception as exc:  # noqa: BLE001
             log(f"blind report failed: {exc}")
@@ -1070,7 +1093,11 @@ def run(st: State):
         try:
             report, notes = vulnreport.build(sp, st.workdir, st.brief.get("hotspots"), st.brief.get("routes"))
             if notes["n"]:
-                vulnreport.write(sp.deliverable, report)
+                # a statement that asks for a written report gets prose, not JSON
+                if sp.report_format == "text" or str(sp.deliverable).lower().endswith(_PROSE_EXT):
+                    oracle.write_text(sp.deliverable, vulnreport.to_markdown(report, sp.json_root))
+                else:
+                    vulnreport.write(sp.deliverable, report)
                 st.report_seeded = notes["n"]
                 st.report_gaps = vulnreport.self_check(report, sp.json_root, st.instruction)
                 log(f"draft report written: {notes['n']} findings ({notes['scan']} from the code scan, "
@@ -1081,7 +1108,10 @@ def run(st: State):
                 # Letting a weak model rewrite several thousand tokens of JSON only risks a
                 # truncated file and can exhaust the task's time budget.
                 proven = [h for h in (st.brief.get("hotspots") or []) if h.get("severity") in ("critical", "high")]
-                okj, whyj = oracle.check_json_report(sp.deliverable, sp.json_root, sp.json_fields)
+                if sp.report_format == "text" or str(sp.deliverable).lower().endswith(_PROSE_EXT):
+                    okj, whyj = oracle.check_nonempty(sp.deliverable)
+                else:
+                    okj, whyj = oracle.check_json_report(sp.deliverable, sp.json_root, sp.json_fields)
                 if proven and not st.report_gaps and okj and not os.environ.get("LOCAL_AGENT_ALWAYS_MODEL"):
                     log(f"report solved deterministically: {len(proven)} proven finding(s) from the code, "
                         "report complete and well-formed (0 tokens)")
@@ -1093,7 +1123,7 @@ def run(st: State):
     if sp.kind == "ctf" and sp.deliverable and not os.environ.get("LOCAL_AGENT_ALWAYS_MODEL"):
         try:
             gate_root = Path(sp.evidence_dir) if sp.evidence_dir else st.workdir
-            flag, how = ctf_gate.solve(gate_root, sp.flag_prefix)
+            flag, how = ctf_gate.solve(gate_root, sp.flag_prefix, st.instruction)
         except Exception as exc:  # noqa: BLE001
             flag, how = None, ""
             log(f"ctf gate solver failed: {exc}")
@@ -1116,6 +1146,21 @@ def run(st: State):
             oracle.write_text(sp.deliverable, clean[0])
             st.seen_flags.append(clean[0])
             log(f"{len(clean)} clean flag candidates; wrote {clean[0]} as insurance, the model may refine it")
+    if sp.kind == "ctf" and sp.deliverable and not st.seen_flags and not os.environ.get("LOCAL_AGENT_ALWAYS_MODEL"):
+        # Nothing in the challenge's own files decoded. Only now is a service worth asking:
+        # loopback is shared with whatever else the container runs, so a flag served there
+        # is a last resort, never a shortcut past the challenge itself.
+        try:
+            gate_root = Path(sp.evidence_dir) if sp.evidence_dir else st.workdir
+            flag, how = ctf_gate.solve(gate_root, sp.flag_prefix, st.instruction, allow_service=True)
+        except Exception as exc:  # noqa: BLE001
+            flag, how = None, ""
+            log(f"service probe failed: {exc}")
+        if flag:
+            oracle.write_text(sp.deliverable, flag)
+            st.seen_flags.append(flag)
+            log(f"ctf solved deterministically ({how}) (0 tokens)")
+            return
     base_url, api_key, model = resolve_endpoint()
     if not base_url:
         log("no OPENAI_BASE_URL; skipping the model phase")

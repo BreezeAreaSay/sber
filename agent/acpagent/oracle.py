@@ -559,11 +559,17 @@ def changed_files(root: Path, snap: dict):
 
 def compile_errors(files):
     errs = []
+    js = []
     for p in files:
         if p.suffix == ".py":
             r = subprocess.run(["python3", "-m", "py_compile", str(p)], capture_output=True, text=True, timeout=30)
             if r.returncode != 0:
                 errs.append(f"{p}: {(r.stderr or r.stdout).strip()[-600:]}")
+        elif p.suffix.lower() in (".js", ".mjs", ".cjs", ".ts"):
+            js.append(p)
+    if js:
+        from acpagent import jsfix
+        errs.extend(jsfix.check_files(js))
     return errs
 
 
